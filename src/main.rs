@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::thread;
 
 fn main() {
     println!("Logs from your program will appear here!");
@@ -7,6 +8,7 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
     for stream in listener.incoming() {
+        thread::spawn(move || {
         match stream {
             Ok(mut _stream) => {
                 println!("accepted new connection");
@@ -31,5 +33,6 @@ fn main() {
                 println!("error: {}", e);
             }
         }
+        });
     }
 }
