@@ -1,13 +1,30 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail, Result};
 
 use crate::resp::RESP;
 
+struct StoredValue {
+    value: String,
+    valid_until: Option<Instant>,
+}
+
+impl StoredValue {
+    fn value(&self) -> Option<String> {
+        if let Some(valid_until) = self.valid_until {
+            if valid_until < Instant::now() {
+                return None;
+            }
+        }
+        Some(self.value.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct RedisServer {
-    store: Arc<RwLock<HashMap<String, String>>>,
+    store: Arc<RwLock<HashMap<String, StoredValue>>>,
 }
 
 impl RedisServer {
@@ -30,10 +47,15 @@ impl RedisServer {
             }
             "SET" => {
                 // minimal implementation of https://redis.io/docs/latest/commands/set/
-                // SET key value
                 match params {
-                    [RESP::Bulk(key), RESP::Bulk(value)] => {
-                        self.store.write().unwrap().insert(key.clone(), value.clone());
+                    // SET key value
+                    [RESP::Bulk(key), RESP::Bulk(value), set_options @ ..] => {
+                        let px_expiration_ms = parse_set_options(set_options)?;
+                        let valid_until = px_expiration_ms
+                            .iter()
+                            .flat_map(|&expiration_ms| std::time::Instant::now().checked_add(Duration::from_millis(expiration_ms)))
+                            .next();
+                        self.store.write().unwrap().insert(key.clone(), StoredValue { value: value.clone(), valid_until });
                         Ok(RESP::String("OK".to_string()))
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
@@ -44,15 +66,43 @@ impl RedisServer {
                 // GET key
                 match params {
                     [RESP::Bulk(key)] => {
-                        match  self.store.read().unwrap().get(key)  {
-                            Some(value) => Ok(RESP::Bulk(value.clone())),
-                            None => Ok(RESP::Null),
-                        }
+                        Ok(
+                            // extract valid value from store
+                            self.store.read().unwrap().get(key)
+                                .iter().flat_map(|&value| value.value())
+                                // wrap it in bulk
+                                .map(|v| RESP::Bulk(v))
+                                .next()
+                                // Null if not found
+                                .unwrap_or(RESP::Null)
+                        )
                     }
-                    _ => Err(anyhow!("invalid set command {:?}", params)),
+                    _ => Err(anyhow!("invalid get command {:?}", params)),
                 }
             }
             _ => Err(anyhow!("Unknown command {}", cmd)),
         }
     }
+}
+
+fn parse_set_options(params: &[RESP]) -> Result<Option<u64>> {
+    let mut set_options = params.iter();
+    loop {
+        match set_options.next() {
+            None => break,
+            Some(RESP::Bulk(option)) => {
+                if option.to_uppercase() == "PX" {
+                    if let Some(RESP::Bulk(ms)) = set_options.next() {
+                        let ms = ms.to_string().parse::<u64>()?;
+                        return Ok(Some(ms));
+                    }
+                    bail!("invalid PX option");
+                }
+                // some other thing we don't handle
+                bail!("unknown set option {:?}", option);
+            }
+            _ => continue,
+        }
+    }
+    Ok(None)
 }

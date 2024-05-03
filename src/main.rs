@@ -28,15 +28,19 @@ fn main() {
                     loop {
                         if let Some(command) = reader.next() {
                             println!("sending response to {:?}", command);
-                            if let Ok(response) = handler(&server, &command) {
-                                println!("{:?} -> {:?}", command, response);
-                                if let Err(err) = reader.response(&response) {
-                                    println!("error while writing response: {}. terminating connection", err);
+                            match handler(&server, &command) {
+                                Ok(response) => {
+                                    println!("{:?} -> {:?}", command, response);
+                                    if let Err(err) = reader.response(&response) {
+                                        println!("error while writing response: {}. terminating connection", err);
+                                        break;
+                                    }
+                                    // loop continues to read the next message
+                                }
+                                Err(err) => {
+                                    println!("error while handling command: {}. terminating connection", err);
                                     break;
                                 }
-                                // loop continues to read the next message
-                            } else {
-                                break;
                             }
                         } else {
                             break;
