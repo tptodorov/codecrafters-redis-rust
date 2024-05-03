@@ -15,7 +15,6 @@ const DEFAULT_PORT: u32 = 6379;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
-    println!("all args: {:?}", args);
 
     let args_str = args
         .iter()

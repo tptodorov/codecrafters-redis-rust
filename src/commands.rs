@@ -80,6 +80,21 @@ impl RedisServer {
                     _ => Err(anyhow!("invalid get command {:?}", params)),
                 }
             }
+            "INFO" => {
+                // minimal implementation of https://redis.io/docs/latest/commands/info/
+                // INFO replication
+                match params {
+                    [RESP::Bulk(sub_command)] => {
+                        match sub_command.to_ascii_uppercase().as_str() {
+                            "REPLICATION" => {
+                                Ok(RESP::Bulk("role:master".to_string()))
+                            }
+                            _ => Err(anyhow!("unknown info command {:?}", sub_command)),
+                        }
+                    }
+                    _ => Err(anyhow!("invalid get command {:?}", params)),
+                }
+            }
             _ => Err(anyhow!("Unknown command {}", cmd)),
         }
     }
