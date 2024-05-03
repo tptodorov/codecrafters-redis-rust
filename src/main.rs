@@ -1,5 +1,5 @@
 use std::net::TcpListener;
-use std::thread;
+use std::{env, thread};
 
 use anyhow::bail;
 use anyhow::Result;
@@ -11,10 +11,26 @@ use crate::commands::RedisServer;
 mod resp;
 mod commands;
 
-fn main() {
-    println!("starting redis server");
+const DEFAULT_PORT: u32 = 6379;
 
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+fn main() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    println!("all args: {:?}", args);
+
+    let args_str = args
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<&str>>();
+
+    let port: u32 = match args_str.as_slice() {
+        ["--port", port] => port.parse::<u32>()?,
+        _ => DEFAULT_PORT,
+    };
+
+    println!("starting redis server on port {}", port);
+
+    let bind_address = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(bind_address).unwrap();
 
     let server = RedisServer::new();
 
@@ -53,6 +69,7 @@ fn main() {
             }
         });
     }
+    Ok(())
 }
 
 fn handler(server: &RedisServer, message: &RESP) -> Result<RESP> {

@@ -50,7 +50,7 @@ impl RedisServer {
                 match params {
                     // SET key value
                     [RESP::Bulk(key), RESP::Bulk(value), set_options @ ..] => {
-                        let px_expiration_ms = parse_set_options(set_options)?;
+                        let px_expiration_ms = extract_px_expiration(set_options)?;
                         let valid_until = px_expiration_ms
                             .iter()
                             .flat_map(|&expiration_ms| std::time::Instant::now().checked_add(Duration::from_millis(expiration_ms)))
@@ -85,7 +85,7 @@ impl RedisServer {
     }
 }
 
-fn parse_set_options(params: &[RESP]) -> Result<Option<u64>> {
+fn extract_px_expiration(params: &[RESP]) -> Result<Option<u64>> {
     let mut set_options = params.iter();
     loop {
         match set_options.next() {
@@ -98,8 +98,6 @@ fn parse_set_options(params: &[RESP]) -> Result<Option<u64>> {
                     }
                     bail!("invalid PX option");
                 }
-                // some other thing we don't handle
-                bail!("unknown set option {:?}", option);
             }
             _ => continue,
         }
