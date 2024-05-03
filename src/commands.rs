@@ -6,6 +6,9 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::resp::RESP;
 
+pub type Port = u32;
+pub type Binding = (String, Port);
+
 struct StoredValue {
     value: String,
     valid_until: Option<Instant>,
@@ -25,12 +28,14 @@ impl StoredValue {
 #[derive(Clone)]
 pub struct RedisServer {
     store: Arc<RwLock<HashMap<String, StoredValue>>>,
+    replica_of: Option<Binding>,
 }
 
 impl RedisServer {
-    pub fn new() -> Self {
+    pub fn new(replica_of: Option<Binding>) -> Self {
         RedisServer {
             store: Arc::new(RwLock::new(HashMap::new())),
+            replica_of,
         }
     }
 
@@ -87,7 +92,8 @@ impl RedisServer {
                     [RESP::Bulk(sub_command)] => {
                         match sub_command.to_ascii_uppercase().as_str() {
                             "REPLICATION" => {
-                                Ok(RESP::Bulk("role:master".to_string()))
+                                let role = if self.replica_of.is_some() { "role:slave" } else { "role:master" };
+                                Ok(RESP::Bulk(format!("role:{}", role)))
                             }
                             _ => Err(anyhow!("unknown info command {:?}", sub_command)),
                         }

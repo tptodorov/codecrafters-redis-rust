@@ -1,37 +1,50 @@
-use std::net::TcpListener;
 use std::{env, thread};
+use std::net::TcpListener;
 
 use anyhow::bail;
 use anyhow::Result;
 
 use resp::{RESP, RESPReader};
 
-use crate::commands::RedisServer;
+use crate::commands::{Port, RedisServer};
 
 mod resp;
 mod commands;
 
-const DEFAULT_PORT: u32 = 6379;
+
+const DEFAULT_PORT: Port = 6379;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let args_str = args
+    let mut args_str = args
         .iter()
-        .map(|s| s.as_str())
-        .collect::<Vec<&str>>();
+        .map(|s| s.as_str());
 
-    let port: u32 = match args_str.as_slice() {
-        ["--port", port] => port.parse::<u32>()?,
-        _ => DEFAULT_PORT,
-    };
+    let mut port = DEFAULT_PORT;
+    let mut replicaof = None;
+    loop {
+        let option = args_str.next();
+        if option == None {
+            break;
+        }
+        if let Some("--port") = option {
+            port = args_str.next().unwrap().parse()?;
+        }
+        if let Some("--replicaof") = option {
+            let host = args_str.next().unwrap().to_string();
+            let port = args_str.next().unwrap().parse::<Port>()?;
+            replicaof = Some((host, port))
+        }
+    }
+
 
     println!("starting redis server on port {}", port);
 
     let bind_address = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(bind_address).unwrap();
 
-    let server = RedisServer::new();
+    let server = RedisServer::new(replicaof);
 
     for stream in listener.incoming() {
         let server = server.clone(); // cheap op since server contains mostly references
