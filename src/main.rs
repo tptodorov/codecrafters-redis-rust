@@ -1,7 +1,6 @@
 use std::{env, thread};
 use std::net::TcpListener;
 
-use anyhow::bail;
 use anyhow::Result;
 use net::{Binding, Port};
 
@@ -13,6 +12,7 @@ mod resp;
 mod redis;
 mod client;
 mod net;
+mod rdb;
 
 
 const DEFAULT_PORT: Port = 6379;
@@ -61,10 +61,10 @@ fn main() -> Result<()> {
                     loop {
                         if let Some(command) = reader.next() {
                             println!("sending response to {:?}", command);
-                            match handler(&server, &command) {
-                                Ok(response) => {
-                                    println!("{:?} -> {:?}", command, response);
-                                    if let Err(err) = reader.response(&response) {
+                            match server.handler(&command) {
+                                Ok(responses) => {
+                                    println!("{:?} -> {:?}", command, responses);
+                                    if let Err(err) = reader.responses(&responses.iter().map(|r| r).collect::<Vec<&RESP>>()) {
                                         println!("error while writing response: {}. terminating connection", err);
                                         break;
                                     }
@@ -87,18 +87,5 @@ fn main() -> Result<()> {
         });
     }
     Ok(())
-}
-
-fn handler(server: &RedisServer, message: &RESP) -> Result<RESP> {
-    println!("message: {:?}", message);
-    match message {
-        RESP::Array(array) =>
-            match &array[..] {
-                [RESP::Bulk(command), params @ .. ] => server.command_handler(command.to_uppercase().as_str(), params),
-                _ => bail!("Invalid message".to_string()),
-            }
-        ,
-        _ => bail!("Invalid message".to_string()),
-    }
 }
 

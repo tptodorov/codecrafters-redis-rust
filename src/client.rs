@@ -50,6 +50,7 @@ impl RedisClient {
         self.stream.response(&RESP::Array(command))?;
         if let Some(RESP::String(str)) = self.stream.next() {
             if str.to_uppercase().starts_with("FULLRESYNC ") {
+                let rds = self.stream.next();
                 return Ok(());
             }
         }

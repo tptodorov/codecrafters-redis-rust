@@ -10,6 +10,7 @@ pub enum RESP {
     Bulk(String),
     Array(Vec<RESP>),
     Null,
+    File(Vec<u8>),
 }
 
 pub struct RESPReader {
@@ -22,9 +23,14 @@ impl RESPReader {
     }
 
     pub fn response(&mut self, response: &RESP) -> anyhow::Result<()> {
-        let mut writer = BufWriter::new(&self.stream);
+        self.responses(&[response])
+    }
 
-        write_resp(&mut writer, response)?;
+    pub fn responses(&mut self, responses: &[&RESP]) -> anyhow::Result<()> {
+        let mut writer = BufWriter::new(&self.stream);
+        for response in responses {
+            write_resp(&mut writer, response)?;
+        }
         writer.flush()?;
         Ok(())
     }
@@ -68,6 +74,10 @@ fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> anyhow::Re
                     write_resp(writer, item)?;
                 }
             }
+        }
+        RESP::File(array) => {
+            write!(writer, "${}\r\n", array.len())?;
+            writer.write_all(array)?;
         }
     }
     Ok(())

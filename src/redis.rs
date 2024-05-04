@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Result};
 use crate::client::RedisClient;
 use crate::net::{Binding, Port};
+use crate::rdb::empty_rdb;
 
 use crate::resp::RESP;
 
@@ -51,14 +52,27 @@ impl RedisServer {
         )
     }
 
+    pub fn handler(&self, message: &RESP) -> Result<Vec<RESP>> {
+        println!("message: {:?}", message);
+        match message {
+            RESP::Array(array) =>
+                match &array[..] {
+                    [RESP::Bulk(command), params @ .. ] => self.command_handler(command.to_uppercase().as_str(), params),
+                    _ => bail!("Invalid message".to_string()),
+                }
+            ,
+            _ => bail!("Invalid message".to_string()),
+        }
+    }
 
-    pub fn command_handler(&self, cmd: &str, params: &[RESP]) -> Result<RESP> {
+
+    pub fn command_handler(&self, cmd: &str, params: &[RESP]) -> Result<Vec<RESP>> {
         match cmd {
-            "PING" => Ok(RESP::String("PONG".to_string())),
+            "PING" => Ok(vec![RESP::String("PONG".to_string())]),
             "ECHO" => {
                 let param1 = params.get(0).unwrap_or(&RESP::Null);
                 match param1 {
-                    RESP::Bulk(param1) => Ok(RESP::Bulk(param1.to_owned())),
+                    RESP::Bulk(param1) => Ok(vec![RESP::Bulk(param1.to_owned())]),
                     _ => Err(anyhow!("invalid echo  command {:?}", params)),
                 }
             }
@@ -73,7 +87,7 @@ impl RedisServer {
                             .flat_map(|&expiration_ms| Instant::now().checked_add(Duration::from_millis(expiration_ms)))
                             .next();
                         self.store.write().unwrap().insert(key.clone(), StoredValue { value: value.clone(), valid_until });
-                        Ok(RESP::String("OK".to_string()))
+                        Ok(vec![RESP::String("OK".to_string())])
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
                 }
@@ -83,7 +97,7 @@ impl RedisServer {
                 // GET key
                 match params {
                     [RESP::Bulk(key)] => {
-                        Ok(
+                        Ok(vec![
                             // extract valid value from store
                             self.store.read().unwrap().get(key)
                                 .iter().flat_map(|&value| value.value())
@@ -92,7 +106,7 @@ impl RedisServer {
                                 .next()
                                 // Null if not found
                                 .unwrap_or(RESP::Null)
-                        )
+                        ])
                     }
                     _ => Err(anyhow!("invalid get command {:?}", params)),
                 }
@@ -113,7 +127,7 @@ impl RedisServer {
                                 let info = pairs
                                     .map(|(k, v)| format!("{}:{}", k, v))
                                     .join("\r\n");
-                                Ok(RESP::Bulk(info))
+                                Ok(vec![RESP::Bulk(info)])
                             }
                             _ => Err(anyhow!("unknown info command {:?}", sub_command)),
                         }
@@ -124,7 +138,7 @@ impl RedisServer {
             "REPLCONF" => {
                 // minimal implementation of https://redis.io/docs/latest/commands/replconf/
                 // REPLCONF ...
-                Ok(RESP::String("OK".to_string()))
+                Ok(vec![RESP::String("OK".to_string())])
             }
             "PSYNC" => {
                 // minimal implementation of https://redis.io/docs/latest/commands/psync/
@@ -133,7 +147,7 @@ impl RedisServer {
                     [RESP::Bulk(repl_id), RESP::Bulk(offset)] => {
                         // replica does not know where to start
                         if repl_id == "?" && offset == "-1" {
-                            Ok(RESP::Bulk(format!("FULLRESYNC {} 0", self.master_replid)))
+                            Ok(vec![RESP::Bulk(format!("FULLRESYNC {} 0", self.master_replid)), RESP::File(empty_rdb())])
                         } else {
                             Err(anyhow!("invalid psync command {:?}", params))
                         }
