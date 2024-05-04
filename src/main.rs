@@ -6,10 +6,10 @@ use anyhow::Result;
 
 use resp::{RESP, RESPReader};
 
-use crate::commands::{Port, RedisServer};
+use crate::redis::{Port, RedisServer};
 
 mod resp;
-mod commands;
+mod redis;
 
 
 const DEFAULT_PORT: Port = 6379;

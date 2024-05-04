@@ -29,12 +29,17 @@ impl StoredValue {
 pub struct RedisServer {
     store: Arc<RwLock<HashMap<String, StoredValue>>>,
     replica_of: Option<Binding>,
+    master_repl_offset: usize,
+    master_replid: String,
 }
 
 impl RedisServer {
     pub fn new(replica_of: Option<Binding>) -> Self {
+        let master_replid= "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string();
         RedisServer {
             store: Arc::new(RwLock::new(HashMap::new())),
+            master_repl_offset: 0,
+            master_replid,
             replica_of,
         }
     }
@@ -92,8 +97,16 @@ impl RedisServer {
                     [RESP::Bulk(sub_command)] => {
                         match sub_command.to_ascii_uppercase().as_str() {
                             "REPLICATION" => {
-                                let role = if self.replica_of.is_some() { "role:slave" } else { "role:master" };
-                                Ok(RESP::Bulk(format!("role:{}", role)))
+                                let role = if self.replica_of.is_some() { "slave" } else { "master" };
+                                let pairs = [
+                                    ("role", role),
+                                    ("master_replid", &self.master_replid),
+                                    ("master_repl_offset", &format!("{}",self.master_repl_offset))
+                                ];
+                                let info = pairs
+                                    .map(|(k, v)| format!("{}:{}", k, v))
+                                    .join("\r\n");
+                                Ok(RESP::Bulk(info))
                             }
                             _ => Err(anyhow!("unknown info command {:?}", sub_command)),
                         }
