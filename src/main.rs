@@ -3,13 +3,16 @@ use std::net::TcpListener;
 
 use anyhow::bail;
 use anyhow::Result;
+use net::{Binding, Port};
 
 use resp::{RESP, RESPReader};
 
-use crate::redis::{Port, RedisServer};
+use crate::redis::RedisServer;
 
 mod resp;
 mod redis;
+mod client;
+mod net;
 
 
 const DEFAULT_PORT: Port = 6379;
@@ -21,8 +24,9 @@ fn main() -> Result<()> {
         .iter()
         .map(|s| s.as_str());
 
+    // parse options
     let mut port = DEFAULT_PORT;
-    let mut replicaof = None;
+    let mut replicaof: Option<Binding> = None;
     loop {
         let option = args_str.next();
         if option == None {
@@ -34,7 +38,8 @@ fn main() -> Result<()> {
         if let Some("--replicaof") = option {
             let host = args_str.next().unwrap().to_string();
             let port = args_str.next().unwrap().parse::<Port>()?;
-            replicaof = Some((host, port))
+            let master = Binding(host, port);
+            replicaof = Some(master)
         }
     }
 
@@ -44,7 +49,7 @@ fn main() -> Result<()> {
     let bind_address = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(bind_address).unwrap();
 
-    let server = RedisServer::new(replicaof);
+    let server = RedisServer::new(replicaof)?;
 
     for stream in listener.incoming() {
         let server = server.clone(); // cheap op since server contains mostly references
@@ -96,3 +101,4 @@ fn handler(server: &RedisServer, message: &RESP) -> Result<RESP> {
         _ => bail!("Invalid message".to_string()),
     }
 }
+

@@ -3,11 +3,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
+use crate::client::RedisClient;
+use crate::net::Binding;
 
 use crate::resp::RESP;
-
-pub type Port = u32;
-pub type Binding = (String, Port);
 
 struct StoredValue {
     value: String,
@@ -34,18 +33,24 @@ pub struct RedisServer {
 }
 
 impl RedisServer {
-    pub fn new(replica_of: Option<Binding>) -> Self {
-        let master_replid= "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string();
-        RedisServer {
-            store: Arc::new(RwLock::new(HashMap::new())),
-            master_repl_offset: 0,
-            master_replid,
-            replica_of,
+    pub fn new(replica_of: Option<Binding>) -> Result<Self> {
+        let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990deep".to_string();
+
+        if let Some(master) = &replica_of {
+            replication_protocol(master)?;
         }
+        Ok(
+            RedisServer {
+                store: Arc::new(RwLock::new(HashMap::new())),
+                master_repl_offset: 0,
+                master_replid,
+                replica_of,
+            }
+        )
     }
 
 
-    pub fn command_handler(&self, cmd: &str, params: &[RESP]) -> anyhow::Result<RESP> {
+    pub fn command_handler(&self, cmd: &str, params: &[RESP]) -> Result<RESP> {
         match cmd {
             "PING" => Ok(RESP::String("PONG".to_string())),
             "ECHO" => {
@@ -63,7 +68,7 @@ impl RedisServer {
                         let px_expiration_ms = extract_px_expiration(set_options)?;
                         let valid_until = px_expiration_ms
                             .iter()
-                            .flat_map(|&expiration_ms| std::time::Instant::now().checked_add(Duration::from_millis(expiration_ms)))
+                            .flat_map(|&expiration_ms| Instant::now().checked_add(Duration::from_millis(expiration_ms)))
                             .next();
                         self.store.write().unwrap().insert(key.clone(), StoredValue { value: value.clone(), valid_until });
                         Ok(RESP::String("OK".to_string()))
@@ -101,7 +106,7 @@ impl RedisServer {
                                 let pairs = [
                                     ("role", role),
                                     ("master_replid", &self.master_replid),
-                                    ("master_repl_offset", &format!("{}",self.master_repl_offset))
+                                    ("master_repl_offset", &format!("{}", self.master_repl_offset))
                                 ];
                                 let info = pairs
                                     .map(|(k, v)| format!("{}:{}", k, v))
@@ -137,4 +142,12 @@ fn extract_px_expiration(params: &[RESP]) -> Result<Option<u64>> {
         }
     }
     Ok(None)
+}
+
+
+fn replication_protocol(master: &Binding) -> Result<()> {
+    let mut master_client = RedisClient::new(master)?;
+    master_client.ping()?;
+    println!("replication initialised with master: {}", master);
+    Ok(())
 }
