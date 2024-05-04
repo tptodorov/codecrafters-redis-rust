@@ -46,10 +46,10 @@ fn main() -> Result<()> {
 
     println!("starting redis server on port {}", port);
 
-    let bind_address = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(bind_address).unwrap();
+    let bind_address = Binding("127.0.0.1".to_string(), port);
+    let listener = TcpListener::bind(bind_address.to_string()).unwrap();
 
-    let server = RedisServer::new(replicaof)?;
+    let server = RedisServer::new(bind_address, replicaof)?;
 
     for stream in listener.incoming() {
         let server = server.clone(); // cheap op since server contains mostly references

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use crate::client::RedisClient;
-use crate::net::Binding;
+use crate::net::{Binding, Port};
 
 use crate::resp::RESP;
 
@@ -27,20 +27,22 @@ impl StoredValue {
 #[derive(Clone)]
 pub struct RedisServer {
     store: Arc<RwLock<HashMap<String, StoredValue>>>,
+    binding: Binding,
     replica_of: Option<Binding>,
     master_repl_offset: usize,
     master_replid: String,
 }
 
 impl RedisServer {
-    pub fn new(replica_of: Option<Binding>) -> Result<Self> {
+    pub fn new(binding: Binding, replica_of: Option<Binding>) -> Result<Self> {
         let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990deep".to_string();
 
         if let Some(master) = &replica_of {
-            replication_protocol(master)?;
+            replication_protocol(binding.1, master)?;
         }
         Ok(
             RedisServer {
+                binding,
                 store: Arc::new(RwLock::new(HashMap::new())),
                 master_repl_offset: 0,
                 master_replid,
@@ -145,9 +147,11 @@ fn extract_px_expiration(params: &[RESP]) -> Result<Option<u64>> {
 }
 
 
-fn replication_protocol(master: &Binding) -> Result<()> {
+fn replication_protocol(this_port: Port, master: &Binding) -> Result<()> {
     let mut master_client = RedisClient::new(master)?;
     master_client.ping()?;
+    master_client.replconfig(&vec!["listening-port", &format!("{}", this_port)])?;
+    master_client.replconfig(&vec!["capa", "psync2"])?;
     println!("replication initialised with master: {}", master);
     Ok(())
 }
