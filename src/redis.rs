@@ -121,6 +121,12 @@ impl RedisServer {
                     _ => Err(anyhow!("invalid get command {:?}", params)),
                 }
             }
+            "REPLCONF" => {
+                // minimal implementation of https://redis.io/docs/latest/commands/replconf/
+                // REPLCONF ...
+                Ok(RESP::String("OK".to_string()))
+            }
+
             _ => Err(anyhow!("Unknown command {}", cmd)),
         }
     }
