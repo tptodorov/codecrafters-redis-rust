@@ -126,6 +126,21 @@ impl RedisServer {
                 // REPLCONF ...
                 Ok(RESP::String("OK".to_string()))
             }
+            "PSYNC" => {
+                // minimal implementation of https://redis.io/docs/latest/commands/psync/
+                // PSYNC replication-id offset
+                match params {
+                    [RESP::Bulk(repl_id), RESP::Bulk(offset)] => {
+                        // replica does not know where to start
+                        if repl_id == "?" && offset == "-1" {
+                            Ok(RESP::Bulk(format!("FULLRESYNC {} 0", self.master_replid)))
+                        } else {
+                            Err(anyhow!("invalid psync command {:?}", params))
+                        }
+                    }
+                    _ => Err(anyhow!("invalid psync command {:?}", params)),
+                }
+            }
 
             _ => Err(anyhow!("Unknown command {}", cmd)),
         }
