@@ -152,6 +152,7 @@ fn replication_protocol(this_port: Port, master: &Binding) -> Result<()> {
     master_client.ping()?;
     master_client.replconfig(&vec!["listening-port", &format!("{}", this_port)])?;
     master_client.replconfig(&vec!["capa", "psync2"])?;
+    master_client.psync("?", -1)?;
     println!("replication initialised with master: {}", master);
     Ok(())
 }
