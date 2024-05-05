@@ -1,8 +1,10 @@
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
-use anyhow::bail;
 
-#[derive(Debug)]
+use anyhow::bail;
+use anyhow::Result;
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum RESP {
     String(String),
     Error(String),
@@ -13,44 +15,85 @@ pub enum RESP {
     File(Vec<u8>),
 }
 
-pub struct RESPReader {
+pub struct RESPConnection {
     stream: TcpStream,
 }
 
-impl RESPReader {
+impl RESPConnection {
     pub fn new(stream: TcpStream) -> Self {
         Self { stream }
     }
 
-    pub fn response(&mut self, response: &RESP) -> anyhow::Result<()> {
+    pub fn response(&mut self, response: &RESP) -> Result<()> {
         self.responses(&[response])
     }
 
-    pub fn responses(&mut self, responses: &[&RESP]) -> anyhow::Result<()> {
+    pub fn responses(&mut self, responses: &[&RESP]) -> Result<()> {
         let mut writer = BufWriter::new(&self.stream);
         for response in responses {
             write_resp(&mut writer, response)?;
+            writer.flush()?;
         }
-        writer.flush()?;
         Ok(())
+    }
+
+    // expects the following format:
+    // $<len>\r\n<content>
+    pub fn read_binary(&mut self) -> Result<RESP> {
+        let mut reader = BufReader::new(&self.stream);
+
+        let buf = &mut String::new();
+        match reader.read_line(buf) {
+            Ok(0) => {
+                bail!("connection closed by peer");
+            }
+            Ok(_len) => {
+                let line = buf.trim();
+                println!("read line: {}", line);
+                if line.is_empty() {
+                    bail!("empty line");
+                } else {
+                    let type_char = line.chars().nth(0);
+                    match type_char {
+                        Some('$') => {
+                            let len: usize = line[1..].parse().unwrap();
+
+                            let mut buf: Vec<u8> = vec![0; len];
+                            if reader.read_exact(&mut buf).is_ok() {
+                                buf.truncate(len);
+                                Ok(RESP::File(buf))
+                            } else {
+                                bail!("invalid file command {}", line);
+                            }
+                        }
+                        _ => {
+                            bail!("invalid file command {}", line);
+                        }
+                    }
+                }
+            }
+            _ => {
+                bail!("read error");
+            }
+        }
     }
 }
 
-impl Iterator for RESPReader {
+impl Iterator for RESPConnection {
     type Item = RESP;
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut reader = BufReader::new(&self.stream);
 
         read_resp(&mut reader).unwrap_or_else(|err| {
-            println!("error: {:?}", err);
+            println!("connection error: {:?}", err);
             None
         })
     }
 }
 
 
-fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> anyhow::Result<()> {
+fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> Result<()> {
     match response {
         RESP::String(s) => {
             write!(writer, "+{}\r\n", s)?;
@@ -76,14 +119,17 @@ fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> anyhow::Re
             }
         }
         RESP::File(array) => {
+            println!("write {} binary: {:?}", array.len(), array);
             write!(writer, "${}\r\n", array.len())?;
+            writer.flush()?;
             writer.write_all(array)?;
+            writer.flush()?;
         }
     }
     Ok(())
 }
 
-fn read_resp(reader: &mut BufReader<&TcpStream>) -> anyhow::Result<Option<RESP>> {
+fn read_resp(reader: &mut BufReader<&TcpStream>) -> Result<Option<RESP>> {
     let buf = &mut String::new();
     match reader.read_line(buf) {
         Ok(0) => {
@@ -107,6 +153,8 @@ fn read_resp(reader: &mut BufReader<&TcpStream>) -> anyhow::Result<Option<RESP>>
                         } else {
                             let mut buf: Vec<u8> = vec![0; len as usize + 2]; // read also the 2 bytes /r/n after the string which are used as delimiters
                             if reader.read_exact(&mut buf).is_ok() {
+                                assert_eq!(buf[buf.len() - 2], b'\r');
+                                assert_eq!(buf[buf.len() - 1], b'\n');
                                 buf.truncate(len as usize); // drop the 2 bytes at the end since they are only delimiters
                                 let bulk_string = String::from_utf8(buf)?;
                                 Ok(Some(RESP::Bulk(bulk_string)))

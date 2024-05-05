@@ -4,8 +4,6 @@ use std::net::TcpListener;
 use anyhow::Result;
 use net::{Binding, Port};
 
-use resp::{RESP, RESPReader};
-
 use crate::redis::RedisServer;
 
 mod resp;
@@ -13,6 +11,7 @@ mod redis;
 mod client;
 mod net;
 mod rdb;
+mod replication;
 
 
 const DEFAULT_PORT: Port = 6379;
@@ -43,45 +42,26 @@ fn main() -> Result<()> {
         }
     }
 
-
-    println!("starting redis server on port {}", port);
-
+    if replicaof.is_some() {
+        println!("starting redis replica on port {}", port);
+    } else {
+        println!("starting redis master on port {}", port);
+    }
     let bind_address = Binding("127.0.0.1".to_string(), port);
     let listener = TcpListener::bind(bind_address.to_string()).unwrap();
 
     let server = RedisServer::new(bind_address, replicaof)?;
 
     for stream in listener.incoming() {
-        let server = server.clone(); // cheap op since server contains mostly references
+        let server_connection = server.clone(); // cheap op since server contains mostly references
         thread::spawn(move || {
             match stream {
                 Ok(_stream) => {
                     println!("accepted new connection");
-                    let mut reader = RESPReader::new(_stream);
-                    loop {
-                        if let Some(command) = reader.next() {
-                            println!("sending response to {:?}", command);
-                            match server.handler(&command) {
-                                Ok(responses) => {
-                                    println!("{:?} -> {:?}", command, responses);
-                                    if let Err(err) = reader.responses(&responses.iter().map(|r| r).collect::<Vec<&RESP>>()) {
-                                        println!("error while writing response: {}. terminating connection", err);
-                                        break;
-                                    }
-                                    // loop continues to read the next message
-                                }
-                                Err(err) => {
-                                    println!("error while handling command: {}. terminating connection", err);
-                                    break;
-                                }
-                            }
-                        } else {
-                            break;
-                        }
-                    }
+                    server_connection.handle_connection(_stream).unwrap();
                 }
                 Err(e) => {
-                    println!("error: {}", e);
+                    println!("connection thread failed: {}", e);
                 }
             }
         });

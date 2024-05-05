@@ -1,19 +1,20 @@
 use std::net::TcpStream;
 use crate::net::Binding;
 use anyhow::{bail, Result};
-use crate::resp::{RESP, RESPReader};
+use crate::resp::{RESP, RESPConnection};
 
 pub struct RedisClient {
-    binding: Binding,
-    stream: RESPReader,
+    _binding: Binding,
+    stream: RESPConnection,
 }
 
 impl RedisClient {
     pub fn new(binding: &Binding) -> Result<Self> {
         let stream = TcpStream::connect(binding.to_string())?;
+        println!("connected to: {:?}", binding);
         Ok(RedisClient {
-            stream: RESPReader::new(stream),
-            binding: binding.clone(),
+            stream: RESPConnection::new(stream),
+            _binding: binding.clone(),
         })
     }
 
@@ -48,12 +49,27 @@ impl RedisClient {
         ];
 
         self.stream.response(&RESP::Array(command))?;
-        if let Some(RESP::String(str)) = self.stream.next() {
+
+        let psync_response = self.stream.next();
+        if let Some(RESP::String(str)) = psync_response {
             if str.to_uppercase().starts_with("FULLRESYNC ") {
-                let rds = self.stream.next();
-                return Ok(());
+                println!("waiting for rds data");
+                // expect master to send the RDB in a Bulk like binary
+                if let RESP::File(rds) = self.stream.read_binary()? {
+                    println!("read binary {} rds: {:?}", rds.len(), rds);
+                    return Ok(());
+                }
             }
+            bail!("psync unknown response: {}", str);
         }
-        bail!("psync failed");
+        bail!("psync failed: {:?}",psync_response);
+    }
+
+    pub fn read_replication_command(&mut self) -> Result<RESP> {
+        let psync_response = self.stream.next();
+        match psync_response {
+            Some(array @ RESP::Array(_)) => Ok(array),
+            _ => bail!("replication message must be an array: {:?}", psync_response)
+        }
     }
 }
