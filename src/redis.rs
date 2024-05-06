@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::net::Binding;
+use crate::net::{Binding, Port};
 use crate::rdb::{empty_rdb, StoredValue};
-use crate::replication;
 use crate::resp::{RESP, RESPConnection};
 use std::sync::mpsc;
 use std::thread;
+use crate::client::RedisClient;
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -59,31 +59,36 @@ pub struct RedisServer {
     master_repl_offset: usize,
     master_replid: String,
     replica_senders: Arc<RwLock<Vec<mpsc::Sender<RESP>>>>,
+    log: Arc<RwLock<Vec<RESP>>>,
 }
 
 impl RedisServer {
     pub fn new(binding: Binding, replica_of: Option<Binding>) -> Result<Self> {
         let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990deep".to_string();
 
+        let server = RedisServer {
+            // binding,
+            store: Arc::new(RwLock::new(HashMap::new())),
+            master_repl_offset: 0,
+            master_replid,
+            replica_of: replica_of.clone(),
+            replica_senders: Arc::new(RwLock::new(vec![])),
+            log: Arc::new(RwLock::new(vec![])),
+        };
+
         // start replication thread
-        if let Some(master) = replica_of.clone() {
-            thread::spawn( move || {
+        if let Some(master) = replica_of {
+            let replica_redis = server.clone(); // cheap clone, store is shared
+            thread::spawn(move || {
                 loop {
-                    replication::replication_protocol(binding.1, &master).unwrap_or_else(|err| println!("replication failed: {:?}. will restart replication connection", err));
+                    replica_redis.replica_replication_protocol(binding.1, &master).unwrap_or_else(|err| println!("replication failed: {:?}. will restart replication connection", err));
                     thread::sleep(Duration::from_secs(1));
                 }
             });
         }
 
         Ok(
-            RedisServer {
-                // binding,
-                store: Arc::new(RwLock::new(HashMap::new())),
-                master_repl_offset: 0,
-                master_replid,
-                replica_of,
-                replica_senders: Arc::new(RwLock::new(vec![])),
-            }
+            server
         )
     }
 
@@ -121,7 +126,7 @@ impl RedisServer {
 
                         if command.is_mutation() && self.is_master() {
                             // replicate mutations only if you are a master
-                            self.replicate(message);
+                            self.master_replicate(message);
                         }
 
                         println!("{:?} -> {:?}", command, responses);
@@ -136,12 +141,16 @@ impl RedisServer {
                             // register listener for messages
                             let (tx, rx) = mpsc::channel::<RESP>();
                             self.replica_senders.write().unwrap().push(tx);
+                            // TODO remove the TX from the list
 
                             // any received messages will be sent to the current replica connection
                             for received in rx {
                                 println!("Replicating: {:?}", received);
                                 if let Err(err) = connection.response(&received) {
                                     println!("returned error: {} while replicating command: {:?}", err, received);
+                                    if err.to_string().contains("Broken pipe") {
+                                        bail!("client connection dropped");
+                                    }
                                 }
                             }
                         }
@@ -239,7 +248,11 @@ impl RedisServer {
                         // replica does not know where to start
                         if repl_id == "?" && offset == "-1" {
                             // this makes the current connection a replication connection
-                            Ok(vec![RESP::String(format!("FULLRESYNC {} 0", self.master_replid)), RESP::File(empty_rdb())])
+                            let mut sync_response = vec![RESP::String(format!("FULLRESYNC {} 0", self.master_replid)), RESP::File(empty_rdb())];
+                            // add current log for replication on top of the rds image
+                            let mut current_log = self.log.read().unwrap().clone();
+                            sync_response.append(&mut current_log);
+                            Ok(sync_response)
                         } else {
                             Err(anyhow!("invalid psync command {:?}", params))
                         }
@@ -256,12 +269,51 @@ impl RedisServer {
         self.replica_of.is_none()
     }
 
-    fn replicate(&self, command_array: RESP) {
+    fn master_replicate(&self, command_array: RESP) {
         assert!(matches!(&command_array, RESP::Array(_)), "not an array: {:?}", command_array);
         assert!(self.is_master(), "not a master");
+        // append to the command log
+        self.log.write().unwrap().push(command_array.clone());
+
         self.replica_senders.read().unwrap().iter().for_each(move |sender| {
             sender.send(command_array.clone()).unwrap()
         });
+    }
+
+    pub fn replica_replication_protocol(&self, this_port: Port, master: &Binding) -> Result<()> {
+        let mut master_client = RedisClient::new(master)?;
+
+        master_client.ping()?;
+        master_client.replconfig(&vec!["listening-port", &format!("{}", this_port)])?;
+        master_client.replconfig(&vec!["capa", "psync2"])?;
+        master_client.psync("?", -1)?;
+
+        println!("replication initialised with master: {}", master);
+
+        loop {
+            let message = master_client.read_replication_command()?;
+            println!("master sent replicated command: {:?}", message);
+
+            match &message {
+                RESP::Array(array) =>
+                    match &array[..] {
+                        [RESP::Bulk(command), params @ .. ] => {
+                            let command: Command = command.parse()?;
+                            assert!(command.is_mutation(), "protocol requires replica to process only mutations");
+
+                            self.handle_command(&command, params)?;
+                            // replicas are ignoring the response from successful command
+                            println!("replicated command: {:?}", command);
+                        }
+                        _ => {
+                            // ignore other messages
+                        }
+                    }
+                _ => {
+                    // ignore other messages
+                }
+            }
+        }
     }
 }
 

@@ -16,12 +16,13 @@ pub enum RESP {
 }
 
 pub struct RESPConnection {
-    stream: TcpStream,
+    buf_reader: BufReader<TcpStream>,
+    buf_writer: BufWriter<TcpStream>,
 }
 
 impl RESPConnection {
     pub fn new(stream: TcpStream) -> Self {
-        Self { stream }
+        Self { buf_reader: BufReader::new(stream.try_clone().unwrap()), buf_writer: BufWriter::new(stream) }
     }
 
     pub fn response(&mut self, response: &RESP) -> Result<()> {
@@ -29,10 +30,9 @@ impl RESPConnection {
     }
 
     pub fn responses(&mut self, responses: &[&RESP]) -> Result<()> {
-        let mut writer = BufWriter::new(&self.stream);
         for response in responses {
-            write_resp(&mut writer, response)?;
-            writer.flush()?;
+            write_resp(&mut self.buf_writer, response)?;
+            self.buf_writer.flush()?;
         }
         Ok(())
     }
@@ -40,10 +40,8 @@ impl RESPConnection {
     // expects the following format:
     // $<len>\r\n<content>
     pub fn read_binary(&mut self) -> Result<RESP> {
-        let mut reader = BufReader::new(&self.stream);
-
         let buf = &mut String::new();
-        match reader.read_line(buf) {
+        match self.buf_reader.read_line(buf) {
             Ok(0) => {
                 bail!("connection closed by peer");
             }
@@ -59,7 +57,7 @@ impl RESPConnection {
                             let len: usize = line[1..].parse().unwrap();
 
                             let mut buf: Vec<u8> = vec![0; len];
-                            if reader.read_exact(&mut buf).is_ok() {
+                            if self.buf_reader.read_exact(&mut buf).is_ok() {
                                 buf.truncate(len);
                                 Ok(RESP::File(buf))
                             } else {
@@ -83,9 +81,7 @@ impl Iterator for RESPConnection {
     type Item = RESP;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut reader = BufReader::new(&self.stream);
-
-        read_resp(&mut reader).unwrap_or_else(|err| {
+        read_resp(&mut self.buf_reader).unwrap_or_else(|err| {
             println!("connection error: {:?}", err);
             None
         })
@@ -93,7 +89,7 @@ impl Iterator for RESPConnection {
 }
 
 
-fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> Result<()> {
+fn write_resp(writer: &mut BufWriter<TcpStream>, response: &RESP) -> Result<()> {
     match response {
         RESP::String(s) => {
             write!(writer, "+{}\r\n", s)?;
@@ -111,6 +107,7 @@ fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> Result<()>
             write!(writer, "$-1\r\n")?;
         }
         RESP::Array(array) => {
+            println!("write array of {} items", array.len());
             write!(writer, "*{}\r\n", array.len())?;
             if array.len() > 0 {
                 for item in array {
@@ -129,7 +126,7 @@ fn write_resp(writer: &mut BufWriter<&TcpStream>, response: &RESP) -> Result<()>
     Ok(())
 }
 
-fn read_resp(reader: &mut BufReader<&TcpStream>) -> Result<Option<RESP>> {
+fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<Option<RESP>> {
     let buf = &mut String::new();
     match reader.read_line(buf) {
         Ok(0) => {

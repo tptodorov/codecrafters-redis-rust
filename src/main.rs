@@ -11,7 +11,6 @@ mod redis;
 mod client;
 mod net;
 mod rdb;
-mod replication;
 
 
 const DEFAULT_PORT: Port = 6379;

@@ -42,7 +42,7 @@ impl RedisClient {
         }
         bail!("replconfig failed");
     }
-    pub fn psync(&mut self, replication_id: &str, offset: i64) -> Result<()> {
+    pub fn psync(&mut self, replication_id: &str, offset: i64) -> Result<Vec<u8>> {
         let command = vec![RESP::Bulk("PSYNC".to_string()),
                            RESP::Bulk(replication_id.to_string()),
                            RESP::Bulk(format!("{}", offset)),
@@ -57,7 +57,7 @@ impl RedisClient {
                 // expect master to send the RDB in a Bulk like binary
                 if let RESP::File(rds) = self.stream.read_binary()? {
                     println!("read binary {} rds: {:?}", rds.len(), rds);
-                    return Ok(());
+                    return Ok(rds);
                 }
             }
             bail!("psync unknown response: {}", str);
