@@ -19,7 +19,7 @@ impl RedisClient {
     }
 
     pub fn ping(&mut self) -> Result<()> {
-        self.stream.response(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
+        self.stream.send_response(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
         if let Some(RESP::String(str)) = self.stream.next() {
             if str.to_uppercase() == "PONG" {
                 return Ok(());
@@ -34,7 +34,7 @@ impl RedisClient {
         let mut bulk_params = params.into_iter().map(|param| RESP::Bulk(param.to_string())).collect::<Vec<RESP>>();
         command.append(&mut bulk_params);
 
-        self.stream.response(&RESP::Array(command))?;
+        self.stream.send_response(&RESP::Array(command))?;
         if let Some(RESP::String(str)) = self.stream.next() {
             if str.to_uppercase() == "OK" {
                 return Ok(());
@@ -48,7 +48,7 @@ impl RedisClient {
                            RESP::Bulk(format!("{}", offset)),
         ];
 
-        self.stream.response(&RESP::Array(command))?;
+        self.stream.send_response(&RESP::Array(command))?;
 
         let psync_response = self.stream.next();
         if let Some(RESP::String(str)) = psync_response {
@@ -71,5 +71,14 @@ impl RedisClient {
             Some(array @ RESP::Array(_)) => Ok(array),
             _ => bail!("replication message must be an array: {:?}", psync_response)
         }
+    }
+
+    pub fn respond_replconf_ack(&mut self, offset: i64) -> Result<()> {
+        let response = vec![RESP::Bulk("REPLCONF".to_string()),
+                            RESP::Bulk("ACK".to_string()),
+                            RESP::Bulk(format!("{}", offset)),
+        ];
+        self.stream.send_response(&RESP::Array(response))?;
+        Ok(())
     }
 }

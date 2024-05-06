@@ -25,16 +25,21 @@ impl RESPConnection {
         Self { buf_reader: BufReader::new(stream.try_clone().unwrap()), buf_writer: BufWriter::new(stream) }
     }
 
-    pub fn response(&mut self, response: &RESP) -> Result<()> {
-        self.responses(&[response])
+    pub fn send_response(&mut self, response: &RESP) -> Result<()> {
+        self.send_responses(&[response])
     }
 
-    pub fn responses(&mut self, responses: &[&RESP]) -> Result<()> {
+    pub fn send_responses(&mut self, responses: &[&RESP]) -> Result<()> {
         for response in responses {
             write_resp(&mut self.buf_writer, response)?;
             self.buf_writer.flush()?;
         }
         Ok(())
+    }
+
+    pub fn send_command(&mut self, command_line: &str) -> Result<()> {
+        let command_message = RESP::Array(command_line.split(" ").map(|token| RESP::Bulk(token.to_string())).collect::<Vec<RESP>>());
+        self.send_response(&command_message)
     }
 
     // expects the following format:

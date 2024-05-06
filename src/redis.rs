@@ -130,11 +130,19 @@ impl RedisServer {
                         }
 
                         println!("{:?} -> {:?}", command, responses);
-                        if let Err(err) = connection.responses(&responses.iter().map(|r| r).collect::<Vec<&RESP>>()) {
+                        if let Err(err) = connection.send_responses(&responses.iter().map(|r| r).collect::<Vec<&RESP>>()) {
                             bail!("error while writing response: {}. terminating connection", err);
                         }
 
                         if command == Command::PSYNC {
+                            println!("confirm with replica");
+                            // connection.send_command("REPLCONF GETACK *")?;
+                            // if let Some(RESP::String(repl_ack_response)) = connection.next() {
+                            //     if repl_ack_response.to_uppercase() == "REPLCONF ACK 0" {
+                            //         println!("replica accepted the rds: {}", repl_ack_response);
+                            //     }
+                            // }
+
                             // this connection is turning into replication connection
                             println!("after PSYNC, here will be sending replication commands");
 
@@ -146,7 +154,7 @@ impl RedisServer {
                             // any received messages will be sent to the current replica connection
                             for received in rx {
                                 println!("Replicating: {:?}", received);
-                                if let Err(err) = connection.response(&received) {
+                                if let Err(err) = connection.send_response(&received) {
                                     println!("returned error: {} while replicating command: {:?}", err, received);
                                     if err.to_string().contains("Broken pipe") {
                                         bail!("client connection dropped");
@@ -288,17 +296,25 @@ impl RedisServer {
         master_client.replconfig(&vec!["capa", "psync2"])?;
         master_client.psync("?", -1)?;
 
-        println!("replication initialised with master: {}", master);
+        println!("replication connection initialised with master: {}", master);
 
         loop {
             let message = master_client.read_replication_command()?;
-            println!("master sent replicated command: {:?}", message);
+            println!("master sent message over replication connection: {:?}", message);
 
             match &message {
                 RESP::Array(array) =>
                     match &array[..] {
                         [RESP::Bulk(command), params @ .. ] => {
                             let command: Command = command.parse()?;
+
+                            // this is an exception to the normal replication flow of commands
+                            if command == Command::REPLCONF {
+                                println!("replica ack to master request: {:?}", message);
+                                master_client.respond_replconf_ack(0)?;
+                                continue;
+                            }
+
                             assert!(command.is_mutation(), "protocol requires replica to process only mutations");
 
                             self.handle_command(&command, params)?;
