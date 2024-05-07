@@ -26,8 +26,16 @@ enum Command {
 }
 
 impl Command {
-    pub fn is_mutation(&self) -> bool {
+    /** command mutates the local storage */
+    pub fn is_mutating(&self) -> bool {
         matches!(self, Command::SET | Command::DEL )
+    }
+
+    /**
+     * command can be sent over the replication connection and supports replication functionality.
+     */
+    pub fn is_replicating(&self) -> bool {
+        matches!(self, Command::SET | Command::DEL | Command::REPLCONF | Command::PING )
     }
 }
 
@@ -95,7 +103,7 @@ impl RedisServer {
     pub fn handle_connection(&self, stream: TcpStream) -> Result<()> {
         let mut connection = RESPConnection::new(stream);
         loop {
-            if let Some(command) = connection.next() {
+            if let (_len, Some(command)) = connection.read_resp()? {
                 println!("sending response to {:?}", command);
                 match self.handle_message(command, &mut connection) {
                     Ok(_) => {
@@ -124,7 +132,7 @@ impl RedisServer {
 
                         let responses = self.handle_command(&command, params)?;
 
-                        if command.is_mutation() && self.is_master() {
+                        if command.is_mutating() && self.is_master() {
                             // replicate mutations only if you are a master
                             self.master_replicate(message);
                         }
@@ -298,8 +306,11 @@ impl RedisServer {
 
         println!("replication connection initialised with master: {}", master);
 
+        // accumulating data sent from master to replica
+        let mut read_bytes = 0_u64;
+
         loop {
-            let message = master_client.read_replication_command()?;
+            let (len, message) = master_client.read_replication_command()?;
             println!("master sent message over replication connection: {:?}", message);
 
             match &message {
@@ -311,11 +322,18 @@ impl RedisServer {
                             // this is an exception to the normal replication flow of commands
                             if command == Command::REPLCONF {
                                 println!("replica ack to master request: {:?}", message);
-                                master_client.respond_replconf_ack(0)?;
+                                master_client.respond_replconf_ack(read_bytes)?;
+
+                                read_bytes += len;
+                                println!("after command {:?} offset is {}", message, read_bytes);
+
                                 continue;
                             }
 
-                            assert!(command.is_mutation(), "protocol requires replica to process only mutations");
+                            read_bytes += len;
+                            println!("after command {:?} offset is {}", message, read_bytes);
+
+                            assert!(command.is_replicating(), "command not acceptable in replication channel");
 
                             self.handle_command(&command, params)?;
                             // replicas are ignoring the response from successful command

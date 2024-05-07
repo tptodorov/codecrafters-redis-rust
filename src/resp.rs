@@ -42,6 +42,10 @@ impl RESPConnection {
         self.send_response(&command_message)
     }
 
+    pub fn read_resp(&mut self) -> Result<(u64, Option<RESP>)> {
+        read_resp(&mut self.buf_reader)
+    }
+
     // expects the following format:
     // $<len>\r\n<content>
     pub fn read_binary(&mut self) -> Result<RESP> {
@@ -79,17 +83,6 @@ impl RESPConnection {
                 bail!("read error");
             }
         }
-    }
-}
-
-impl Iterator for RESPConnection {
-    type Item = RESP;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        read_resp(&mut self.buf_reader).unwrap_or_else(|err| {
-            println!("connection error: {:?}", err);
-            None
-        })
     }
 }
 
@@ -131,20 +124,21 @@ fn write_resp(writer: &mut BufWriter<TcpStream>, response: &RESP) -> Result<()> 
     Ok(())
 }
 
-fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<Option<RESP>> {
+fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<(u64, Option<RESP>)> {
     let buf = &mut String::new();
     match reader.read_line(buf) {
         Ok(0) => {
             bail!("connection closed by peer");
         }
-        Ok(_len) => {
+        Ok(len) => {
+            let mut full_len = len as u64;
             let line = buf.trim();
             println!("read line: {}", line);
             if line.is_empty() {
                 bail!("empty line");
             } else {
                 let type_char = line.chars().nth(0);
-                match type_char {
+                let response = match type_char {
                     Some('+') => Ok(Some(RESP::String(line[1..].to_string()))),
                     Some('-') => Ok(Some(RESP::Error(line[1..].to_string()))),
                     Some(':') => Ok(Some(RESP::Int(line[1..].parse().unwrap()))),
@@ -157,6 +151,7 @@ fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<Option<RESP>> {
                             if reader.read_exact(&mut buf).is_ok() {
                                 assert_eq!(buf[buf.len() - 2], b'\r');
                                 assert_eq!(buf[buf.len() - 1], b'\n');
+                                full_len += buf.capacity() as u64;
                                 buf.truncate(len as usize); // drop the 2 bytes at the end since they are only delimiters
                                 let bulk_string = String::from_utf8(buf)?;
                                 Ok(Some(RESP::Bulk(bulk_string)))
@@ -172,9 +167,10 @@ fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<Option<RESP>> {
                         } else {
                             let mut array = Vec::with_capacity(len as usize);
                             for _ in 0..len {
-                                let item = read_resp(reader)?.unwrap();
+                                let (item_len, item) = read_resp(reader)?;
+                                full_len += item_len;
                                 println!("adding item: {:?}", item);
-                                array.push(item);
+                                array.push(item.unwrap());
                             }
                             Ok(Some(RESP::Array(array)))
                         }
@@ -182,7 +178,8 @@ fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<Option<RESP>> {
                     _ => {
                         bail!("unknown command {}", line);
                     }
-                }
+                };
+                response.map(|r| (full_len, r))
             }
         }
         _ => {

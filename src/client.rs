@@ -20,7 +20,7 @@ impl RedisClient {
 
     pub fn ping(&mut self) -> Result<()> {
         self.stream.send_response(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
-        if let Some(RESP::String(str)) = self.stream.next() {
+        if let (_, Some(RESP::String(str))) = self.stream.read_resp()? {
             if str.to_uppercase() == "PONG" {
                 return Ok(());
             }
@@ -35,7 +35,7 @@ impl RedisClient {
         command.append(&mut bulk_params);
 
         self.stream.send_response(&RESP::Array(command))?;
-        if let Some(RESP::String(str)) = self.stream.next() {
+        if let (_, Some(RESP::String(str))) = self.stream.read_resp()? {
             if str.to_uppercase() == "OK" {
                 return Ok(());
             }
@@ -50,7 +50,7 @@ impl RedisClient {
 
         self.stream.send_response(&RESP::Array(command))?;
 
-        let psync_response = self.stream.next();
+        let (_, psync_response) = self.stream.read_resp()?;
         if let Some(RESP::String(str)) = psync_response {
             if str.to_uppercase().starts_with("FULLRESYNC ") {
                 println!("waiting for rds data");
@@ -65,15 +65,15 @@ impl RedisClient {
         bail!("psync failed: {:?}",psync_response);
     }
 
-    pub fn read_replication_command(&mut self) -> Result<RESP> {
-        let psync_response = self.stream.next();
+    pub fn read_replication_command(&mut self) -> Result<(u64, RESP)> {
+        let (len, psync_response) = self.stream.read_resp()?;
         match psync_response {
-            Some(array @ RESP::Array(_)) => Ok(array),
+            Some(array @ RESP::Array(_)) => Ok((len, array)),
             _ => bail!("replication message must be an array: {:?}", psync_response)
         }
     }
 
-    pub fn respond_replconf_ack(&mut self, offset: i64) -> Result<()> {
+    pub fn respond_replconf_ack(&mut self, offset: u64) -> Result<()> {
         let response = vec![RESP::Bulk("REPLCONF".to_string()),
                             RESP::Bulk("ACK".to_string()),
                             RESP::Bulk(format!("{}", offset)),
