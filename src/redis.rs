@@ -257,7 +257,7 @@ impl RedisServer {
                 // REPLCONF ...
                 Ok(vec![RESP::String("OK".to_string())])
             }
-            Command::REPLCONF => {
+            Command::WAIT => {
                 // minimal implementation of https://redis.io/docs/latest/commands/wait/
                 // WAIT ...
                 Ok(vec![RESP::Int(0)])
