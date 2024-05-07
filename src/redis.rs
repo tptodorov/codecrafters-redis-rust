@@ -23,6 +23,7 @@ enum Command {
     PSYNC,
     INFO,
     REPLCONF,
+    WAIT,
 }
 
 impl Command {
@@ -53,6 +54,7 @@ impl FromStr for Command {
             "ECHO" => Ok(Command::ECHO),
             "INFO" => Ok(Command::INFO),
             "REPLCONF" => Ok(Command::REPLCONF),
+            "WAIT" => Ok(Command::WAIT),
             _ => bail!("unknown command: {}", input),
         }
     }
@@ -254,6 +256,11 @@ impl RedisServer {
                 // minimal implementation of https://redis.io/docs/latest/commands/replconf/
                 // REPLCONF ...
                 Ok(vec![RESP::String("OK".to_string())])
+            }
+            Command::REPLCONF => {
+                // minimal implementation of https://redis.io/docs/latest/commands/wait/
+                // WAIT ...
+                Ok(vec![RESP::Int(0)])
             }
             Command::PSYNC => {
                 // minimal implementation of https://redis.io/docs/latest/commands/psync/
