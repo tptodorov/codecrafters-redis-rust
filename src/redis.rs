@@ -260,7 +260,9 @@ impl RedisServer {
             Command::WAIT => {
                 // minimal implementation of https://redis.io/docs/latest/commands/wait/
                 // WAIT ...
-                Ok(vec![RESP::Int(0)])
+                assert!(self.is_master(), "only master can do {:?}", cmd);
+                let active_replicas = self.replica_senders.read().unwrap().len();
+                Ok(vec![RESP::Int(active_replicas as i64)])
             }
             Command::PSYNC => {
                 // minimal implementation of https://redis.io/docs/latest/commands/psync/
