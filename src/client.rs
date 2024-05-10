@@ -3,24 +3,24 @@ use crate::net::Binding;
 use anyhow::{bail, Result};
 use crate::resp::{RESP, RESPConnection};
 
-pub struct RedisClient {
+pub struct ReplicaClient {
     _binding: Binding,
-    stream: RESPConnection,
+    pub(crate) stream: RESPConnection,
 }
 
-impl RedisClient {
+impl ReplicaClient {
     pub fn new(binding: &Binding) -> Result<Self> {
         let stream = TcpStream::connect(binding.to_string())?;
-        println!("connected to: {:?}", binding);
-        Ok(RedisClient {
+        println!("connected to: {}", binding);
+        Ok(ReplicaClient {
             stream: RESPConnection::new(stream),
             _binding: binding.clone(),
         })
     }
 
-    pub fn ping(&mut self) -> Result<()> {
-        self.stream.send_response(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
-        if let (_, Some(RESP::String(str))) = self.stream.read_resp()? {
+    pub fn ping_pong(&mut self) -> Result<()> {
+        self.stream.send_message(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
+        if let (_, Some(RESP::String(str))) = self.stream.read_message()? {
             if str.to_uppercase() == "PONG" {
                 return Ok(());
             }
@@ -28,14 +28,14 @@ impl RedisClient {
         bail!("ping failed");
     }
 
-    pub fn replconfig(&mut self, params: &[&str]) -> Result<()> {
+    pub fn replconf(&mut self, params: &[&str]) -> Result<()> {
         let mut command = vec![RESP::Bulk("REPLCONF".to_string())];
 
         let mut bulk_params = params.into_iter().map(|param| RESP::Bulk(param.to_string())).collect::<Vec<RESP>>();
         command.append(&mut bulk_params);
 
-        self.stream.send_response(&RESP::Array(command))?;
-        if let (_, Some(RESP::String(str))) = self.stream.read_resp()? {
+        self.stream.send_message(&RESP::Array(command))?;
+        if let (_, Some(RESP::String(str))) = self.stream.read_message()? {
             if str.to_uppercase() == "OK" {
                 return Ok(());
             }
@@ -48,9 +48,9 @@ impl RedisClient {
                            RESP::Bulk(format!("{}", offset)),
         ];
 
-        self.stream.send_response(&RESP::Array(command))?;
+        self.stream.send_message(&RESP::Array(command))?;
 
-        let (_, psync_response) = self.stream.read_resp()?;
+        let (_, psync_response) = self.stream.read_message()?;
         if let Some(RESP::String(str)) = psync_response {
             if str.to_uppercase().starts_with("FULLRESYNC ") {
                 println!("waiting for rds data");
@@ -62,23 +62,15 @@ impl RedisClient {
             }
             bail!("psync unknown response: {}", str);
         }
-        bail!("psync failed: {:?}",psync_response);
+        bail!("psync failed: {}",psync_response.unwrap());
     }
 
-    pub fn read_replication_command(&mut self) -> Result<(u64, RESP)> {
-        let (len, psync_response) = self.stream.read_resp()?;
+    pub fn read_replication_command(&mut self) -> Result<(usize, RESP)> {
+        let (len, psync_response) = self.stream.read_message()?;
         match psync_response {
             Some(array @ RESP::Array(_)) => Ok((len, array)),
-            _ => bail!("replication message must be an array: {:?}", psync_response)
+            _ => bail!("replication message must be an array: {}", psync_response.unwrap())
         }
     }
 
-    pub fn respond_replconf_ack(&mut self, offset: u64) -> Result<()> {
-        let response = vec![RESP::Bulk("REPLCONF".to_string()),
-                            RESP::Bulk("ACK".to_string()),
-                            RESP::Bulk(format!("{}", offset)),
-        ];
-        self.stream.send_response(&RESP::Array(response))?;
-        Ok(())
-    }
 }

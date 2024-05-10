@@ -1,8 +1,11 @@
+use std::fmt::Display;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
 use anyhow::bail;
 use anyhow::Result;
+use crate::writer::CountingWriter;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RESP {
@@ -15,35 +18,79 @@ pub enum RESP {
     File(Vec<u8>),
 }
 
+impl Display for RESP {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RESP::String(s) => write!(f, "{}", s),
+            RESP::Error(s) => write!(f, "!{}", s),
+            RESP::Int(i) => write!(f, "{}", i),
+            RESP::Bulk(s) => write!(f, "{}", s),
+            RESP::Array(array) => {
+                for item in array {
+                    write!(f, "{} ", item)?;
+                }
+                Ok(())
+            }
+            RESP::Null => write!(f, "null"),
+            RESP::File(file) => write!(f, "File{}", file.len()),
+        }
+    }
+}
+
+pub struct RESPS<'a>(pub &'a [RESP]);
+
+impl<'a> Display for RESPS<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for item in self.0 {
+            write!(f, "{} ", item)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct RESPConnection {
+    stream: TcpStream,
     buf_reader: BufReader<TcpStream>,
     buf_writer: BufWriter<TcpStream>,
 }
 
 impl RESPConnection {
     pub fn new(stream: TcpStream) -> Self {
-        Self { buf_reader: BufReader::new(stream.try_clone().unwrap()), buf_writer: BufWriter::new(stream) }
+        Self {
+            stream: stream.try_clone().unwrap(),
+            buf_reader: BufReader::new(stream.try_clone().unwrap()),
+            buf_writer: BufWriter::new(stream),
+        }
     }
 
-    pub fn send_response(&mut self, response: &RESP) -> Result<()> {
-        self.send_responses(&[response])
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        Ok(self.stream.set_read_timeout(timeout)?)
+    }
+    pub fn read_timeout(&self) -> Result<Option<Duration>> {
+        Ok(self.stream.read_timeout()?)
     }
 
-    pub fn send_responses(&mut self, responses: &[&RESP]) -> Result<()> {
-        for response in responses {
-            write_resp(&mut self.buf_writer, response)?;
+    pub fn _send_command(&mut self, command_line: &str) -> Result<usize> {
+        let command_message = RESP::Array(command_line.split(" ").map(|token| RESP::Bulk(token.to_string())).collect::<Vec<RESP>>());
+        self.send_message(&command_message)
+    }
+
+    pub fn send_message(&mut self, message: &RESP) -> Result<usize> {
+        self.send_messages(&[message])
+    }
+
+    pub fn send_messages(&mut self, messages: &[&RESP]) -> Result<usize> {
+        let mut len = 0_usize;
+        for response in messages {
+            len += write_message(&mut self.buf_writer, response)?;
             self.buf_writer.flush()?;
         }
-        Ok(())
+        Ok(len)
     }
 
-    pub fn send_command(&mut self, command_line: &str) -> Result<()> {
-        let command_message = RESP::Array(command_line.split(" ").map(|token| RESP::Bulk(token.to_string())).collect::<Vec<RESP>>());
-        self.send_response(&command_message)
-    }
 
-    pub fn read_resp(&mut self) -> Result<(u64, Option<RESP>)> {
-        read_resp(&mut self.buf_reader)
+    pub fn read_message(&mut self) -> Result<(usize, Option<RESP>)> {
+        decode_message(&mut self.buf_reader)
     }
 
     // expects the following format:
@@ -56,7 +103,7 @@ impl RESPConnection {
             }
             Ok(_len) => {
                 let line = buf.trim();
-                println!("read line: {}", line);
+                // println!("read line: {}", line);
                 if line.is_empty() {
                     bail!("empty line");
                 } else {
@@ -87,8 +134,17 @@ impl RESPConnection {
 }
 
 
-fn write_resp(writer: &mut BufWriter<TcpStream>, response: &RESP) -> Result<()> {
-    match response {
+fn write_message(writer: &mut BufWriter<TcpStream>, message: &RESP) -> Result<usize> {
+    let mut writer = CountingWriter::new(writer);
+    encode_message(&mut writer, message)?;
+    let bytes = writer.bytes_written();
+    println!("written {} bytes", bytes);
+    writer.flush()?;
+    Ok(bytes)
+}
+
+fn encode_message(writer: &mut CountingWriter<&mut BufWriter<TcpStream>>, message: &RESP) -> Result<()> {
+    match message {
         RESP::String(s) => {
             write!(writer, "+{}\r\n", s)?;
         }
@@ -105,35 +161,35 @@ fn write_resp(writer: &mut BufWriter<TcpStream>, response: &RESP) -> Result<()> 
             write!(writer, "$-1\r\n")?;
         }
         RESP::Array(array) => {
-            println!("write array of {} items", array.len());
+            // println!("write array of {} items", array.len());
             write!(writer, "*{}\r\n", array.len())?;
             if array.len() > 0 {
                 for item in array {
-                    write_resp(writer, item)?;
+                    encode_message(writer, item)?;
                 }
             }
         }
         RESP::File(array) => {
-            println!("write {} binary: {:?}", array.len(), array);
+            // println!("write {} binary: {:?}", array.len(), array);
             write!(writer, "${}\r\n", array.len())?;
             writer.flush()?;
             writer.write_all(array)?;
-            writer.flush()?;
         }
     }
+    writer.flush()?;
     Ok(())
 }
 
-fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<(u64, Option<RESP>)> {
+fn decode_message(reader: &mut BufReader<TcpStream>) -> Result<(usize, Option<RESP>)> {
     let buf = &mut String::new();
     match reader.read_line(buf) {
         Ok(0) => {
             bail!("connection closed by peer");
         }
         Ok(len) => {
-            let mut full_len = len as u64;
+            let mut full_len = len;
             let line = buf.trim();
-            println!("read line: {}", line);
+            // println!("read line: {}", line);
             if line.is_empty() {
                 bail!("empty line");
             } else {
@@ -151,7 +207,7 @@ fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<(u64, Option<RESP>)> {
                             if reader.read_exact(&mut buf).is_ok() {
                                 assert_eq!(buf[buf.len() - 2], b'\r');
                                 assert_eq!(buf[buf.len() - 1], b'\n');
-                                full_len += buf.capacity() as u64;
+                                full_len += buf.capacity();
                                 buf.truncate(len as usize); // drop the 2 bytes at the end since they are only delimiters
                                 let bulk_string = String::from_utf8(buf)?;
                                 Ok(Some(RESP::Bulk(bulk_string)))
@@ -167,9 +223,8 @@ fn read_resp(reader: &mut BufReader<TcpStream>) -> Result<(u64, Option<RESP>)> {
                         } else {
                             let mut array = Vec::with_capacity(len as usize);
                             for _ in 0..len {
-                                let (item_len, item) = read_resp(reader)?;
+                                let (item_len, item) = decode_message(reader)?;
                                 full_len += item_len;
-                                println!("adding item: {:?}", item);
                                 array.push(item.unwrap());
                             }
                             Ok(Some(RESP::Array(array)))
