@@ -24,7 +24,6 @@ enum ReplicaMessage {
 
 #[derive(Debug)]
 struct Replica {
-    id: String,
     sender: Sender<ReplicaMessage>,
     offset: usize,
 }
@@ -225,7 +224,7 @@ impl MasterConnection {
         let (tx, rx) = mpsc::channel();
         {
             let mut replicas = self.master.replicas.write().unwrap();
-            replicas.push(Replica { sender: tx, offset: 0, id: thread_name.to_string() });
+            replicas.push(Replica { sender: tx, offset: 0, });
             println!("@{}: active replicas now {:?}", thread_name, replicas);
         }
 
