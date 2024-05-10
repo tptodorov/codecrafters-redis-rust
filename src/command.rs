@@ -14,6 +14,7 @@ pub enum Command {
     INFO,
     REPLCONF,
     WAIT,
+    CONFIG,
 }
 
 impl Command {
@@ -52,6 +53,7 @@ impl FromStr for Command {
             "INFO" => Ok(Command::INFO),
             "REPLCONF" => Ok(Command::REPLCONF),
             "WAIT" => Ok(Command::WAIT),
+            "CONFIG" => Ok(Command::CONFIG),
             _ => bail!("unknown command: {}", input),
         }
     }
@@ -69,6 +71,7 @@ impl Display for Command {
             Command::INFO => write!(f, "INFO"),
             Command::REPLCONF => write!(f, "REPLCONF"),
             Command::WAIT => write!(f, "WAIT"),
+            Command::CONFIG => write!(f, "CONFIG"),
         }
     }
 }

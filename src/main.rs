@@ -34,9 +34,11 @@ fn main() -> Result<()> {
     // parse options
     let mut port = DEFAULT_PORT;
     let mut replica_of: Option<Binding> = None;
+    let mut dir = ".".to_string();
+    let mut dbfilename = ".".to_string();
     loop {
         let option = args_str.next();
-        if option == None {
+        if option.is_none() {
             break;
         }
         if let Some("--port") = option {
@@ -48,6 +50,12 @@ fn main() -> Result<()> {
             let master = Binding(host, port);
             replica_of = Some(master)
         }
+        if let Some("--dir") = option {
+            dir = args_str.next().unwrap().to_string();
+        }
+        if let Some("--dbfilename") = option {
+            dbfilename = args_str.next().unwrap().to_string();
+        }
     }
 
     let is_replica = replica_of.is_some();
@@ -58,7 +66,7 @@ fn main() -> Result<()> {
     let bind_address = Binding("127.0.0.1".to_string(), port);
     let listener = TcpListener::bind(bind_address.to_string()).unwrap();
 
-    let redis = RedisServer::new(bind_address, !is_replica)?;
+    let redis = RedisServer::new(bind_address, !is_replica, dir, dbfilename)?;
 
     if is_replica {
         start_replication(redis.clone(), replica_of.clone().unwrap())?;

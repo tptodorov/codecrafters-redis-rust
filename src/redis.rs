@@ -22,10 +22,12 @@ pub struct RedisServer {
     pub(crate) log_store: Arc<RwLock<LogStore>>,
     pub(crate) master_replid: String,
     is_master: bool,
+    pub dir: String,
+    pub dbfilename: String,
 }
 
 impl RedisServer {
-    pub fn new(binding: Binding, is_master: bool) -> Result<Self> {
+    pub fn new(binding: Binding, is_master: bool, dir: String, dbfilename: String) -> Result<Self> {
         let master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990deep".to_string();
         let server = RedisServer {
             binding,
@@ -33,7 +35,8 @@ impl RedisServer {
             master_replid,
             is_master,
             log_store: Arc::new(RwLock::new(LogStore::default())),
-
+            dir,
+            dbfilename,
         };
 
 
@@ -44,7 +47,7 @@ impl RedisServer {
         match cmd {
             Command::PING => Ok(vec![RESP::String("PONG".to_string())]),
             Command::ECHO => {
-                let param1 = params.get(0).unwrap_or(&RESP::Null);
+                let param1 = params.first().unwrap_or(&RESP::Null);
                 match param1 {
                     RESP::Bulk(param1) => Ok(vec![RESP::Bulk(param1.to_owned())]),
                     _ => Err(anyhow!("invalid echo  command {:?}", params)),
@@ -107,6 +110,24 @@ impl RedisServer {
                         }
                     }
                     _ => Err(anyhow!("invalid get command {:?}", params)),
+                }
+            }
+            Command::CONFIG => {
+                // minimal implementation of https://redis.io/docs/latest/commands/info/
+                // INFO replication
+                match params {
+                    [RESP::Bulk(sub_command), RESP::Bulk(key) ] => {
+                        match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
+                            ("GET", "dir") => {
+                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.dir.clone())])])
+                            }
+                            ("GET", "dbfilename") => {
+                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.dbfilename.clone())])])
+                            }
+                            _ => Err(anyhow!("unknown config command {:?}", sub_command)),
+                        }
+                    }
+                    _ => Err(anyhow!("invalid config command {:?}", params)),
                 }
             }
 
