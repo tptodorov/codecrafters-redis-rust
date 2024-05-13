@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     let mut port = DEFAULT_PORT;
     let mut replica_of: Option<Binding> = None;
     let mut dir = ".".to_string();
-    let mut dbfilename = ".".to_string();
+    let mut dbfilename = "rds".to_string();
     loop {
         let option = args_str.next();
         if option.is_none() {
@@ -45,9 +45,13 @@ fn main() -> Result<()> {
             port = args_str.next().unwrap().parse()?;
         }
         if let Some("--replicaof") = option {
-            let host = args_str.next().unwrap().to_string();
-            let port = args_str.next().unwrap().parse::<Port>()?;
-            let master = Binding(host, port);
+            let host_port = args_str.next().unwrap().to_string();
+            let mut seq = host_port.split(' ');
+            let host = seq.next().unwrap();
+            let default_port_str = DEFAULT_PORT.to_string();
+            let port = seq.next().unwrap_or(&default_port_str).parse::<Port>()?;
+            let master = Binding(host.to_string(), port);
+            println!("replicating from master {}", master);
             replica_of = Some(master)
         }
         if let Some("--dir") = option {
