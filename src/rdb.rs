@@ -50,9 +50,18 @@ impl Display for StreamEntryId {
 impl StreamEntryId {
     pub fn from_pattern(pattern: String, last_id: Option<&StreamEntryId>) -> Result<Self> {
         if pattern == "*" {
-            Ok(Self(0, 0))
+            Ok(match last_id {
+                None => {
+                    let now = SystemTime::now();
+                    let time_id = now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+                    Self(time_id, 0)
+                }
+                Some(StreamEntryId(last_time_id, last_seq_id)) => {
+                    Self(*last_time_id, last_seq_id + 1)
+                }
+            })
         } else {
-            match pattern.split("-").collect::<Vec<&str>>().as_slice() {
+            match pattern.split('-').collect::<Vec<&str>>().as_slice() {
                 [time_id, "*"] =>
                     {
                         let time_id = time_id.parse::<u64>()?;
@@ -123,10 +132,10 @@ impl StoredValue {
         match &mut self.value {
             Value::Stream(ref mut entries) => {
                 // new id is either explicit or pattern
-                let new_id: StreamEntryId = if entry_id.contains('*') { 
-                    StreamEntryId::from_pattern(entry_id, entries.last().map(|e| &e.0))? 
-                } else { 
-                    entry_id.parse()? 
+                let new_id: StreamEntryId = if entry_id.contains('*') {
+                    StreamEntryId::from_pattern(entry_id, entries.last().map(|e| &e.0))?
+                } else {
+                    entry_id.parse()?
                 };
 
                 if new_id <= StreamEntryId(0, 0) {
