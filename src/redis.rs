@@ -25,9 +25,9 @@ pub struct RedisServer {
     store: Arc<RwLock<KVStore>>,
     pub(crate) log_store: Arc<RwLock<LogStore>>,
     pub(crate) master_replid: String,
-    is_master: bool,
-    pub dir: String,
-    pub dbfilename: String,
+    pub is_master: bool,
+    pub db_dir: String,
+    pub db_filename: String,
 }
 
 impl RedisServer {
@@ -45,8 +45,8 @@ impl RedisServer {
             master_replid,
             is_master,
             log_store: Arc::new(RwLock::new(LogStore::default())),
-            dir: dir.clone(),
-            dbfilename: dbfilename.clone(),
+            db_dir: dir.clone(),
+            db_filename: dbfilename.clone(),
         };
 
         server.try_load_db()?;
@@ -129,7 +129,7 @@ impl RedisServer {
                         }
                         self.store.write().unwrap()
                             .insert_stream(key, id, stream_data)
-                            .map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]), |_| Ok(vec![RESP::Bulk(id.to_string())]))
+                            .map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]), |new_id| Ok(vec![RESP::Bulk(new_id)]))
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
                 }
@@ -182,10 +182,10 @@ impl RedisServer {
                     [RESP::Bulk(sub_command), RESP::Bulk(key) ] => {
                         match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
                             ("GET", "dir") => {
-                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.dir.clone())])])
+                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.db_dir.clone())])])
                             }
                             ("GET", "dbfilename") => {
-                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.dbfilename.clone())])])
+                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.db_filename.clone())])])
                             }
                             _ => Err(anyhow!("unknown config command {:?}", sub_command)),
                         }
@@ -198,7 +198,7 @@ impl RedisServer {
         }
     }
     fn try_load_db(&self) -> Result<()> {
-        let db_file = Path::new(&self.dir).join(&self.dbfilename);
+        let db_file = Path::new(&self.db_dir).join(&self.db_filename);
         if db_file.exists() {
             let file = File::open(&db_file)?;
             self.store.write().unwrap().load(BufReader::new(file))?;

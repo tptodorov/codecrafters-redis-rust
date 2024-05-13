@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::str::FromStr;
@@ -40,6 +41,45 @@ impl FromStr for StreamEntryId {
     }
 }
 
+impl Display for StreamEntryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.0, self.1)
+    }
+}
+
+impl StreamEntryId {
+    pub fn from_pattern(pattern: String, last_id: Option<&StreamEntryId>) -> Result<Self> {
+        if pattern == "*" {
+            Ok(Self(0, 0))
+        } else {
+            match pattern.split("-").collect::<Vec<&str>>().as_slice() {
+                [time_id, "*"] =>
+                    {
+                        let time_id = time_id.parse::<u64>()?;
+                        let default_seq_id = if time_id == 0 { 1 } else { 0 };
+
+                        Ok(match last_id {
+                            None => {
+                                // let now = SystemTime::now();
+                                // let time_id = now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                                // let seq_id = 0;
+                                Self(time_id, default_seq_id)
+                            }
+                            Some(StreamEntryId(last_time_id, last_seq_id)) => {
+                                if *last_time_id == time_id {
+                                    Self(time_id, last_seq_id + 1)
+                                } else {
+                                    Self(time_id, default_seq_id)
+                                }
+                            }
+                        })
+                    }
+                _ => bail!("invalid id")
+            }
+        }
+    }
+}
+
 
 pub struct StreamEntry(StreamEntryId, Vec<(String, String)>);
 
@@ -60,11 +100,11 @@ impl StoredValue {
             valid_until,
         }
     }
-    pub fn from_entry(entry_id: String, entry: Vec<(String, String)>) -> Result<Self> {
-        Ok(StoredValue {
-            value: Value::Stream(vec![StreamEntry(entry_id.parse()?, entry)]),
+    pub fn empty_stream() -> Self {
+        StoredValue {
+            value: Value::Stream(vec![]),
             valid_until: None,
-        })
+        }
     }
 
     pub fn value(&self) -> Option<String> {
@@ -79,21 +119,29 @@ impl StoredValue {
         }
     }
 
-    pub fn add_entry(&mut self, entry_id: String, entry: Vec<(String, String)>) -> Result<()> {
+    pub fn add_entry(&mut self, entry_id: String, entry: Vec<(String, String)>) -> Result<String> {
         match &mut self.value {
             Value::Stream(ref mut entries) => {
-                let new_id: StreamEntryId = entry_id.parse()?;
-                if new_id <=  StreamEntryId(0,0) {
+                // new id is either explicit or pattern
+                let new_id: StreamEntryId = if entry_id.contains('*') { 
+                    StreamEntryId::from_pattern(entry_id, entries.last().map(|e| &e.0))? 
+                } else { 
+                    entry_id.parse()? 
+                };
+
+                if new_id <= StreamEntryId(0, 0) {
                     bail!("ERR The ID specified in XADD must be greater than 0-0");
                 }
+
                 if let Some(last) = entries.last() {
                     let last_id = &last.0;
-                    if &new_id <=  last_id {
+                    if &new_id <= last_id {
                         bail!("ERR The ID specified in XADD is equal or smaller than the target stream top item");
                     }
                 }
+                let new_ids = new_id.to_string();
                 entries.push(StreamEntry(new_id, entry));
-                Ok(())
+                Ok(new_ids)
             }
             _ => bail!("not a stream"),
         }
@@ -110,14 +158,16 @@ impl StoredValue {
 pub struct KVStore(pub HashMap<String, StoredValue>);
 
 impl KVStore {
-
-    pub fn insert_stream(&mut self, key: &str, id: &str, stream_data: Vec<(String, String)>) -> Result<()> {
-        if let Some(value) = self.0.get_mut(key) {
-            value.add_entry(id.to_string(), stream_data)?;
-        } else {
-            self.0.insert(key.to_string(), StoredValue::from_entry(id.to_string(), stream_data)?);
+    pub fn insert_stream(&mut self, key: &str, id_pattern: &str, stream_data: Vec<(String, String)>) -> Result<String> {
+        if !self.0.contains_key(key) {
+            self.0.insert(key.to_string(), StoredValue::empty_stream());
         }
-        Ok(())
+
+        if let Some(value) = self.0.get_mut(key) {
+            return value.add_entry(id_pattern.to_string(), stream_data);
+        }
+
+        bail!("stream not found {}", key);
     }
 
     // Loading of the RDB file is based on the https://rdb.fnordig.de/file_format.html
