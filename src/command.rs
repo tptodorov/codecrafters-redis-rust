@@ -10,6 +10,7 @@ pub enum Command {
     SET,
     DEL,
     GET,
+    TYPE,
     KEYS,
     PSYNC,
     INFO,
@@ -47,6 +48,7 @@ impl FromStr for Command {
         match input.to_uppercase().as_str() {
             "PING" => Ok(Command::PING),
             "GET" => Ok(Command::GET),
+            "TYPE" => Ok(Command::TYPE),
             "SET" => Ok(Command::SET),
             "KEYS" => Ok(Command::KEYS),
             "DEL" => Ok(Command::DEL),
@@ -70,6 +72,7 @@ impl Display for Command {
             Command::KEYS => write!(f, "KEYS"),
             Command::DEL => write!(f, "DEL"),
             Command::GET => write!(f, "GET"),
+            Command::TYPE => write!(f, "TYPE"),
             Command::PSYNC => write!(f, "PSYNC"),
             Command::INFO => write!(f, "INFO"),
             Command::REPLCONF => write!(f, "REPLCONF"),

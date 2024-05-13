@@ -90,10 +90,28 @@ impl RedisServer {
                             self.store.read().unwrap().0.get(key)
                                 .iter().flat_map(|&value| value.value())
                                 // wrap it in bulk
-                                .map(|v| RESP::Bulk(v))
+                                .map(RESP::Bulk)
                                 .next()
                                 // Null if not found
                                 .unwrap_or(RESP::Null)
+                        ])
+                    }
+                    _ => Err(anyhow!("invalid get command {:?}", params)),
+                }
+            }
+            Command::TYPE => {
+                // minimal implementation of https://redis.io/docs/latest/commands/type/
+                match params {
+                    [RESP::Bulk(key)] => {
+                        Ok(vec![
+                            RESP::String(
+                                self.store.read().unwrap().0.get(key)
+                                    .iter().flat_map(|&value| value.value())
+                                    .map(|_v| "string") // TODO add other types
+                                    .next()
+                                    .unwrap_or("none")
+                                    .to_string()
+                            )
                         ])
                     }
                     _ => Err(anyhow!("invalid get command {:?}", params)),
