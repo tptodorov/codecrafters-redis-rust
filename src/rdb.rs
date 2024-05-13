@@ -97,14 +97,13 @@ impl KVStore {
                 0xFF => {
                     // rdb load finished
                     read_crc64(&mut reader)?;
-                    // TODO validate the CRC
+                    return Ok(())
                 }
                 0..=14 => {
                     println!("value type {}", op);
                     let key = read_string(&mut reader)?;
                     let value = read_string(&mut reader)?;
                     self.0.insert(key, StoredValue::new(value, None));
-                    return Ok(());
                 }
 
                 _ => {
