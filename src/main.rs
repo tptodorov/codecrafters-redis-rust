@@ -8,7 +8,7 @@ use crate::master::{MasterConnection, MasterServer};
 
 use crate::redis::RedisServer;
 use crate::replica::{ReplicaConnection, start_replication};
-use crate::types::ClientConnectionHandler;
+use crate::connection::ClientConnectionHandler;
 
 mod resp;
 mod redis;
@@ -19,7 +19,7 @@ mod writer;
 mod command;
 mod master;
 mod replica;
-mod types;
+mod connection;
 
 
 const DEFAULT_PORT: Port = 6379;

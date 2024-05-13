@@ -11,7 +11,7 @@ use crate::net::{Binding, Port};
 use crate::rdb::empty_rdb;
 use crate::redis::RedisServer;
 use crate::resp::{RESP, RESPConnection, RESPS};
-use crate::types::ClientConnectionHandler;
+use crate::connection::ClientConnectionHandler;
 
 type ReplicaResponse = (usize, usize); // offset, replica index
 #[derive(Clone, Debug)]

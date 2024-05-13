@@ -8,7 +8,7 @@ use crate::command::Command;
 use crate::net::Binding;
 use crate::redis::RedisServer;
 use crate::resp::{RESP, RESPConnection};
-use crate::types::ClientConnectionHandler;
+use crate::connection::ClientConnectionHandler;
 
 #[derive(Clone)]
 pub struct ReplicaConnection {

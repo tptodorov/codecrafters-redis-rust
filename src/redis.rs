@@ -74,7 +74,7 @@ impl RedisServer {
                             .iter()
                             .flat_map(|&expiration_ms| SystemTime::now().checked_add(Duration::from_millis(expiration_ms)))
                             .next();
-                        self.store.write().unwrap().0.insert(key.clone(), StoredValue::new(value.clone(), valid_until));
+                        self.store.write().unwrap().0.insert(key.clone(), StoredValue::from_string(value.clone(), valid_until));
                         Ok(vec![RESP::String("OK".to_string())])
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
@@ -106,8 +106,7 @@ impl RedisServer {
                         Ok(vec![
                             RESP::String(
                                 self.store.read().unwrap().0.get(key)
-                                    .iter().flat_map(|&value| value.value())
-                                    .map(|_v| "string") // TODO add other types
+                                    .iter().map(|&value| value.value_type())
                                     .next()
                                     .unwrap_or("none")
                                     .to_string()
@@ -115,6 +114,28 @@ impl RedisServer {
                         ])
                     }
                     _ => Err(anyhow!("invalid get command {:?}", params)),
+                }
+            }
+            Command::XADD => {
+                // minimal implementation of https://redis.io/docs/latest/commands/xadd/
+                // XADD key id field value [field value ...]
+                match params {
+                    // SET key value
+                    [RESP::Bulk(key), RESP::Bulk(id), key_value_pairs @ ..] => {
+                        let mut stream_data = vec![];
+                        let mut iter = key_value_pairs.iter();
+                        while let Some((key, value)) = iter.next().zip(iter.next()) {
+                            stream_data.push((key.to_string(), value.to_string()));
+                        }
+                        let mut store_guard = self.store.write().unwrap();
+                        if let Some(value) = store_guard.0.get_mut(key) {
+                            value.add_entry(id.to_string(), stream_data)?;
+                        } else {
+                            store_guard.0.insert(key.clone(), StoredValue::from_entry(id.to_string(), stream_data));
+                        }
+                        Ok(vec![RESP::Bulk(id.to_string())])
+                    }
+                    _ => Err(anyhow!("invalid set command {:?}", params)),
                 }
             }
             Command::KEYS => {
