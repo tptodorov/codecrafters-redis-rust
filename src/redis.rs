@@ -127,13 +127,9 @@ impl RedisServer {
                         while let Some((key, value)) = iter.next().zip(iter.next()) {
                             stream_data.push((key.to_string(), value.to_string()));
                         }
-                        let mut store_guard = self.store.write().unwrap();
-                        if let Some(value) = store_guard.0.get_mut(key) {
-                            value.add_entry(id.to_string(), stream_data)?;
-                        } else {
-                            store_guard.0.insert(key.clone(), StoredValue::from_entry(id.to_string(), stream_data));
-                        }
-                        Ok(vec![RESP::Bulk(id.to_string())])
+                        self.store.write().unwrap()
+                            .insert_stream(key, id, stream_data)
+                            .map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]), |_| Ok(vec![RESP::Bulk(id.to_string())]))
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
                 }

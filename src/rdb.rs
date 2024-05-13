@@ -1,12 +1,47 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
-pub struct StreamEntry(String, Vec<(String, String)>);
+pub struct StreamEntryId(u64, u64);
+
+impl PartialEq<Self> for StreamEntryId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
+impl PartialOrd for StreamEntryId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.0 > other.0 || (self.0 == other.0 && self.1 > other.1) {
+            Some(Ordering::Greater)
+        } else if self.0 < other.0 || (self.0 == other.0 && self.1 < other.1) {
+            Some(Ordering::Less)
+        } else if self.0 == other.0 && self.1 == other.1 {
+            Some(Ordering::Equal)
+        } else {
+            None
+        }
+    }
+}
+
+impl FromStr for StreamEntryId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('-');
+        let first = parts.next().ok_or_else(|| anyhow!("invalid stream entry id: {}", s))?;
+        let second = parts.next().ok_or_else(|| anyhow!("invalid stream entry id: {}", s))?;
+        Ok(Self(first.parse::<u64>()?, second.parse::<u64>()?))
+    }
+}
+
+
+pub struct StreamEntry(StreamEntryId, Vec<(String, String)>);
 
 pub enum Value {
     String(String),
@@ -25,11 +60,11 @@ impl StoredValue {
             valid_until,
         }
     }
-    pub fn from_entry(entry_id: String, entry: Vec<(String, String)>) -> Self {
-        StoredValue {
-            value: Value::Stream(vec![StreamEntry(entry_id, entry)]),
+    pub fn from_entry(entry_id: String, entry: Vec<(String, String)>) -> Result<Self> {
+        Ok(StoredValue {
+            value: Value::Stream(vec![StreamEntry(entry_id.parse()?, entry)]),
             valid_until: None,
-        }
+        })
     }
 
     pub fn value(&self) -> Option<String> {
@@ -47,7 +82,17 @@ impl StoredValue {
     pub fn add_entry(&mut self, entry_id: String, entry: Vec<(String, String)>) -> Result<()> {
         match &mut self.value {
             Value::Stream(ref mut entries) => {
-                entries.push(StreamEntry(entry_id, entry));
+                let new_id: StreamEntryId = entry_id.parse()?;
+                if new_id <=  StreamEntryId(0,0) {
+                    bail!("ERR The ID specified in XADD must be greater than 0-0");
+                }
+                if let Some(last) = entries.last() {
+                    let last_id = &last.0;
+                    if &new_id <=  last_id {
+                        bail!("ERR The ID specified in XADD is equal or smaller than the target stream top item");
+                    }
+                }
+                entries.push(StreamEntry(new_id, entry));
                 Ok(())
             }
             _ => bail!("not a stream"),
@@ -65,6 +110,15 @@ impl StoredValue {
 pub struct KVStore(pub HashMap<String, StoredValue>);
 
 impl KVStore {
+
+    pub fn insert_stream(&mut self, key: &str, id: &str, stream_data: Vec<(String, String)>) -> Result<()> {
+        if let Some(value) = self.0.get_mut(key) {
+            value.add_entry(id.to_string(), stream_data)?;
+        } else {
+            self.0.insert(key.to_string(), StoredValue::from_entry(id.to_string(), stream_data)?);
+        }
+        Ok(())
+    }
 
     // Loading of the RDB file is based on the https://rdb.fnordig.de/file_format.html
 
