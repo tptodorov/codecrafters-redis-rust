@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Result};
 
@@ -72,7 +72,7 @@ impl RedisServer {
                         let px_expiration_ms = extract_px_expiration(set_options)?;
                         let valid_until = px_expiration_ms
                             .iter()
-                            .flat_map(|&expiration_ms| Instant::now().checked_add(Duration::from_millis(expiration_ms)))
+                            .flat_map(|&expiration_ms| SystemTime::now().checked_add(Duration::from_millis(expiration_ms)))
                             .next();
                         self.store.write().unwrap().0.insert(key.clone(), StoredValue::new(value.clone(), valid_until));
                         Ok(vec![RESP::String("OK".to_string())])

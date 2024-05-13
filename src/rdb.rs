@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::time::Instant;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Result};
 
@@ -29,11 +29,11 @@ pub fn empty_rdb() -> Vec<u8> {
 
 pub struct StoredValue {
     value: String,
-    valid_until: Option<Instant>,
+    valid_until: Option<SystemTime>,
 }
 
 impl StoredValue {
-    pub fn new(value: String, valid_until: Option<Instant>) -> Self {
+    pub fn new(value: String, valid_until: Option<SystemTime>) -> Self {
         StoredValue {
             value,
             valid_until,
@@ -42,7 +42,7 @@ impl StoredValue {
 
     pub fn value(&self) -> Option<String> {
         if let Some(valid_until) = self.valid_until {
-            if valid_until < Instant::now() {
+            if valid_until < SystemTime::now() {
                 return None;
             }
         }
@@ -64,6 +64,7 @@ impl KVStore {
         println!("header: {}", header);
         let version = header["REDIS".len()..header.len()].to_string();
         println!("version: {}", version);
+        let mut timestamp = None;
 
         while let Ok(op) = _read_byte(&mut reader) {
             match op {
@@ -87,23 +88,25 @@ impl KVStore {
                     println!("sizes {} {}", hash_size, expire_size);
                 }
                 0xFD => { // The following expire value is specified in seconds. The following 4 bytes represent the Unix timestamp as an unsigned integer.
-                    let timestamp = (_read_u32(&mut reader)? as u64) * 1000;
-                    print!("timestamp {}", timestamp);
+                    timestamp = Some((_read_u32(&mut reader)? as u64) * 1000);
+                    print!("timestamp {:?}", timestamp);
                 }
                 0xFC => { // The following expire value is specified in milliseconds. The following 8 bytes represent the Unix timestamp as an unsigned long.
-                    let timestamp = _read_u64(&mut reader)? * 1000;
-                    print!("timestamp {}", timestamp);
+                    timestamp = Some(_read_u64(&mut reader)?);
+                    print!("timestamp {:?}", timestamp);
                 }
                 0xFF => {
                     // rdb load finished
                     read_crc64(&mut reader)?;
-                    return Ok(())
+                    return Ok(());
                 }
                 0..=14 => {
-                    println!("value type {}", op);
+                    println!("reading value type {} with timestamp {:?}", op, timestamp);
                     let key = read_string(&mut reader)?;
                     let value = read_string(&mut reader)?;
-                    self.0.insert(key, StoredValue::new(value, None));
+                    self.0.insert(key, StoredValue::new(value, timestamp.map(|epoc_ms| SystemTime::UNIX_EPOCH + Duration::from_millis(epoc_ms))));
+                    // reset    
+                    timestamp = None;
                 }
 
                 _ => {
