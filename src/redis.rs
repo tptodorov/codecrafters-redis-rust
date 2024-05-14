@@ -146,7 +146,12 @@ impl RedisServer {
                             } else {
                                 from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?
                             };
-                        let to_id = to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?;
+                        let to_id =
+                            if to_id == "+" {
+                                StreamEntryId::MAX
+                            } else {
+                                to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?
+                            };
                         self.store.read().unwrap()
                             .range_stream(key, from_id, to_id).map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]),
                                                                            |results| {
