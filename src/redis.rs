@@ -9,7 +9,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::command::Command;
 use crate::net::Binding;
-use crate::rdb::{KVStore, StoredValue};
+use crate::rdb::{KVStore, StoredValue, StreamEntryId};
 use crate::resp::RESP;
 
 #[derive(Default)]
@@ -134,6 +134,30 @@ impl RedisServer {
                     _ => Err(anyhow!("invalid set command {:?}", params)),
                 }
             }
+            Command::XRANGE => {
+                // minimal implementation of https://redis.io/commands/xrange/
+                // XRANGE key id-from id-to
+                match params {
+                    // SET key value
+                    [RESP::Bulk(key), RESP::Bulk(from_id), RESP::Bulk(to_id)] => {
+                        let from_id = from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?;
+                        let to_id = to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?;
+                        self.store.read().unwrap()
+                            .range_stream(key, from_id, to_id).map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]),
+                                                                           |results| {
+                                                                               let results = results.iter().map(|(id, entries)| {
+                                                                                   RESP::Array(vec![
+                                                                                       RESP::Bulk(id.clone()),
+                                                                                       encode_stream_entries(entries),
+                                                                                   ])
+                                                                               }).collect();
+                                                                               Ok(vec![RESP::Array(results)])
+                                                                           })
+                    }
+                    _ => Err(anyhow!("invalid set command {:?}", params)),
+                }
+            }
+
             Command::KEYS => {
                 // minimal implementation of https://redis.io/docs/latest/commands/keys/
                 match params {
@@ -208,6 +232,15 @@ impl RedisServer {
         }
         Ok(())
     }
+}
+
+fn encode_stream_entries(entries: &Vec<(String, String)>) -> RESP {
+    let mut array = vec![];
+    for (k, v) in entries {
+        array.push(RESP::Bulk(k.clone()));
+        array.push(RESP::Bulk(v.clone()));
+    }
+    RESP::Array(array)
 }
 
 fn extract_px_expiration(params: &[RESP]) -> Result<Option<u64>> {

@@ -48,6 +48,10 @@ impl Display for StreamEntryId {
 }
 
 impl StreamEntryId {
+    pub fn new(time_id: u64, seq_id: u64) -> Self {
+        Self(time_id, seq_id)
+    }
+
     pub fn from_pattern(pattern: String, last_id: Option<&StreamEntryId>) -> Result<Self> {
         if pattern == "*" {
             Ok(match last_id {
@@ -128,14 +132,14 @@ impl StoredValue {
         }
     }
 
-    pub fn add_entry(&mut self, entry_id: String, entry: Vec<(String, String)>) -> Result<String> {
+    pub fn add_entry(&mut self, id_pattern: String, entry: Vec<(String, String)>) -> Result<String> {
         match &mut self.value {
             Value::Stream(ref mut entries) => {
                 // new id is either explicit or pattern
-                let new_id: StreamEntryId = if entry_id.contains('*') {
-                    StreamEntryId::from_pattern(entry_id, entries.last().map(|e| &e.0))?
+                let new_id: StreamEntryId = if id_pattern.contains('*') {
+                    StreamEntryId::from_pattern(id_pattern, entries.last().map(|e| &e.0))?
                 } else {
-                    entry_id.parse()?
+                    id_pattern.parse()?
                 };
 
                 if new_id <= StreamEntryId(0, 0) {
@@ -151,6 +155,18 @@ impl StoredValue {
                 let new_ids = new_id.to_string();
                 entries.push(StreamEntry(new_id, entry));
                 Ok(new_ids)
+            }
+            _ => bail!("not a stream"),
+        }
+    }
+    pub fn range(&self, from_id: &StreamEntryId, to_id: &StreamEntryId) -> Result<Vec<&StreamEntry>> {
+        match &self.value {
+            Value::Stream(entries) => {
+                Ok(entries
+                    .iter()
+                    .filter(|&e| e.0 >= *from_id && e.0 <= *to_id)
+                    .collect()
+                )
             }
             _ => bail!("not a stream"),
         }
@@ -177,6 +193,16 @@ impl KVStore {
         }
 
         bail!("stream not found {}", key);
+    }
+
+    pub fn range_stream(& self, key: &str, from_id: StreamEntryId, to_id: StreamEntryId) -> Result<Vec<(String, &Vec<(String, String)>)>>  {
+        self.0.get(key).map_or_else(|| bail!("stream not found {}", key), |value| {
+            Ok(value
+                .range(&from_id, &to_id)?
+                .iter()
+                .map(|&entry| (entry.0.to_string(), &entry.1))
+                .collect())
+        })
     }
 
     // Loading of the RDB file is based on the https://rdb.fnordig.de/file_format.html

@@ -11,13 +11,15 @@ pub enum Command {
     DEL,
     GET,
     TYPE,
-    XADD,
     KEYS,
     PSYNC,
     INFO,
     REPLCONF,
     WAIT,
     CONFIG,
+    // stream commands
+    XADD,
+    XRANGE,
 }
 
 impl Command {
@@ -38,7 +40,6 @@ impl Command {
             _ => bail!("Command not found in message: {}", message),
         }
     }
-
 }
 
 
@@ -51,7 +52,6 @@ impl FromStr for Command {
             "GET" => Ok(Command::GET),
             "TYPE" => Ok(Command::TYPE),
             "SET" => Ok(Command::SET),
-            "XADD" => Ok(Command::XADD),
             "KEYS" => Ok(Command::KEYS),
             "DEL" => Ok(Command::DEL),
             "PSYNC" => Ok(Command::PSYNC),
@@ -60,6 +60,8 @@ impl FromStr for Command {
             "REPLCONF" => Ok(Command::REPLCONF),
             "WAIT" => Ok(Command::WAIT),
             "CONFIG" => Ok(Command::CONFIG),
+            "XADD" => Ok(Command::XADD),
+            "XRANGE" => Ok(Command::XRANGE),
             _ => bail!("unknown command: {}", input),
         }
     }
@@ -74,13 +76,14 @@ impl Display for Command {
             Command::KEYS => write!(f, "KEYS"),
             Command::DEL => write!(f, "DEL"),
             Command::GET => write!(f, "GET"),
-            Command::XADD => write!(f, "XADD"),
             Command::TYPE => write!(f, "TYPE"),
             Command::PSYNC => write!(f, "PSYNC"),
             Command::INFO => write!(f, "INFO"),
             Command::REPLCONF => write!(f, "REPLCONF"),
             Command::WAIT => write!(f, "WAIT"),
             Command::CONFIG => write!(f, "CONFIG"),
+            Command::XADD => write!(f, "XADD"),
+            Command::XRANGE => write!(f, "XRANGE"),
         }
     }
 }
