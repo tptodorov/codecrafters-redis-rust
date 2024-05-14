@@ -48,6 +48,9 @@ impl Display for StreamEntryId {
 }
 
 impl StreamEntryId {
+
+    pub(crate) const MIN: Self = Self(0, 0);
+
     pub fn new(time_id: u64, seq_id: u64) -> Self {
         Self(time_id, seq_id)
     }

@@ -140,7 +140,12 @@ impl RedisServer {
                 match params {
                     // SET key value
                     [RESP::Bulk(key), RESP::Bulk(from_id), RESP::Bulk(to_id)] => {
-                        let from_id = from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?;
+                        let from_id =
+                            if from_id == "-" {
+                                StreamEntryId::MIN
+                            } else {
+                                from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?
+                            };
                         let to_id = to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?;
                         self.store.read().unwrap()
                             .range_stream(key, from_id, to_id).map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]),
