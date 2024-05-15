@@ -164,7 +164,52 @@ impl RedisServer {
                                                                                Ok(vec![RESP::Array(results)])
                                                                            })
                     }
-                    _ => Err(anyhow!("invalid set command {:?}", params)),
+                    _ => Err(anyhow!("invalid xrange command {:?}", params)),
+                }
+            }
+            Command::XREAD => {
+                // minimal implementation of https://redis.io/commands/xread/
+                match params {
+                    [RESP::Bulk(sub_command), sub_params @ ..] => {
+                        // only support streams
+                        if sub_command.to_uppercase() != "STREAMS" {
+                            bail!("unknown subcommand {}", sub_command);
+                        }
+                        // XREAD stream key1 key2 id1 id2
+                        let (keys, ids) = sub_params.split_at(params.len() / 2);
+                        let mut all_results = vec![];
+                        for (key, id) in keys.iter().zip(ids.iter()) {
+                            if !matches!(id, RESP::Bulk(_)) || !matches!(key, RESP::Bulk(_)) {
+                                bail!("invalid XREAD command");
+                            }
+                            let key = key.to_string();
+                            let from_id = id.to_string();
+                            let from_id =
+                                from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?;
+
+                            let key_results = self.store.read().unwrap()
+                                .range_stream(&key, from_id, StreamEntryId::MAX)
+                                .map_or_else(|err| RESP::Error(err.to_string()),
+                                             |results| {
+                                                 let results = results.iter().map(|(id, entries)| {
+                                                     RESP::Array(vec![
+                                                         RESP::Bulk(id.clone()),
+                                                         encode_stream_entries(entries),
+                                                     ])
+                                                 }).collect();
+                                                 RESP::Array(results)
+                                             });
+
+                            all_results.push(
+                                RESP::Array(vec![
+                                    RESP::Bulk(key.to_string()),
+                                    key_results,
+                                ])
+                            )
+                        }
+                        Ok(vec![RESP::Array(all_results)])
+                    }
+                    _ => bail!("invalid XREAD command"),
                 }
             }
 
@@ -231,6 +276,7 @@ impl RedisServer {
             _ => Err(anyhow!("Unknown command {:?}", cmd)),
         }
     }
+
     fn try_load_db(&self) -> Result<()> {
         let db_file = Path::new(&self.db_dir).join(&self.db_filename);
         if db_file.exists() {

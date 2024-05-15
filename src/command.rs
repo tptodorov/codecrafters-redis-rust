@@ -20,6 +20,7 @@ pub enum Command {
     // stream commands
     XADD,
     XRANGE,
+    XREAD,
 }
 
 impl Command {
@@ -62,6 +63,7 @@ impl FromStr for Command {
             "CONFIG" => Ok(Command::CONFIG),
             "XADD" => Ok(Command::XADD),
             "XRANGE" => Ok(Command::XRANGE),
+            "XREAD" => Ok(Command::XREAD),
             _ => bail!("unknown command: {}", input),
         }
     }
@@ -84,6 +86,7 @@ impl Display for Command {
             Command::CONFIG => write!(f, "CONFIG"),
             Command::XADD => write!(f, "XADD"),
             Command::XRANGE => write!(f, "XRANGE"),
+            Command::XREAD => write!(f, "XREAD"),
         }
     }
 }
