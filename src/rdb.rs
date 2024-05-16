@@ -192,7 +192,7 @@ impl StoredValue {
 
     fn add_listener(&mut self, listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>) -> Result<StreamListener> {
         match &mut self.value {
-            Value::Stream(entries, listeners) => {
+            Value::Stream(_, listeners) => {
                 let listener1 = StreamListener(listener);
                 listeners.push(listener1.clone());
                 Ok(listener1)

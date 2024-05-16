@@ -1,6 +1,8 @@
 use std::fmt::Display;
 use std::str::FromStr;
+
 use anyhow::bail;
+
 use crate::resp::RESP;
 
 #[derive(Debug, PartialEq)]
@@ -29,17 +31,22 @@ impl Command {
         matches!(self, Command::SET | Command::DEL )
     }
 
-    pub(crate) fn parse_command(message: &RESP) -> anyhow::Result<(Command, &[RESP])> {
+    pub(crate) fn parse_command(message: &RESP) -> anyhow::Result<(Command, Vec<String>)> {
         match message {
             RESP::Array(array) =>
-                match &array[..] {
-                    [RESP::Bulk(command), params @ .. ] => {
-                        command.parse::<Command>().map(|cmd| (cmd, params))
+                if array.iter().all(|x| matches!(x, RESP::Bulk(_))) {
+                    let strings = array.iter().map(|r| r.to_string()).collect::<Vec<String>>();
+                    match &strings[..] {
+                        [command, params @ .. ] => {
+                            let cmd = command.parse::<Command>()?;
+                            return Ok((cmd, params.to_vec()));
+                        }
+                        _ => {}
                     }
-                    _ => bail!("Command not found in message: {}", message),
                 }
-            _ => bail!("Command not found in message: {}", message),
+            _ => {}
         }
+        bail!("message is not a valid command: {}", message)
     }
 }
 

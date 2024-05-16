@@ -5,10 +5,10 @@ use anyhow::{bail, Result};
 
 use crate::client::ReplicaClient;
 use crate::command::Command;
+use crate::connection::ClientConnectionHandler;
 use crate::net::Binding;
 use crate::redis::RedisServer;
 use crate::resp::{RESP, RESPConnection};
-use crate::connection::ClientConnectionHandler;
 
 #[derive(Clone)]
 pub struct ReplicaConnection {
@@ -27,7 +27,7 @@ impl ReplicaConnection {
         }
     }
 
-    pub(crate) fn handle_client_command(&self, cmd: &Command, params: &[RESP]) -> Result<Vec<RESP>> {
+    pub(crate) fn handle_client_command(&self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
         if cmd.is_mutating() {
             bail!("replica can't handle mutating command: {:?}", cmd)
         }
@@ -36,7 +36,7 @@ impl ReplicaConnection {
         }
     }
 
-    pub(crate) fn handle_internal_command(&self, cmd: &Command, params: &[RESP]) -> Result<Vec<RESP>> {
+    pub(crate) fn handle_internal_command(&self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
         match cmd {
             Command::REPLCONF => {
                 // minimal implementation of https://redis.io/docs/latest/commands/replconf/
@@ -46,7 +46,7 @@ impl ReplicaConnection {
                         RESP::Array(vec![
                             RESP::Bulk("REPLCONF".to_string()),
                             RESP::Bulk("ACK".to_string()),
-                            RESP::Bulk(format!("{}", self.replicated_offset))]) 
+                            RESP::Bulk(format!("{}", self.replicated_offset))])
                     ])
             }
             _ => {
@@ -75,7 +75,7 @@ impl ReplicaConnection {
         let _rds = master_client.psync("?", -1)?;
         // reset offset after snapshot reset
         self.replicated_offset = 0;
-        
+
         println!("@{}: replication connection initialised with master: {}", thread_name, self.replica_of);
 
         // accumulating data sent from master to replica
@@ -86,7 +86,7 @@ impl ReplicaConnection {
 
             let (command, params) = Command::parse_command(&message)?;
 
-            let responses = self.handle_internal_command(&command, params)?;
+            let responses = self.handle_internal_command(&command, &params)?;
             master_client.stream.send_messages(&responses.iter().map(|r| r).collect::<Vec<&RESP>>())?;
             println!("@{}: replica connection handled {:?} and responded to master: {:?}", thread_name, command, responses);
 
@@ -104,7 +104,7 @@ impl ClientConnectionHandler for ReplicaConnection {
         println!("message: {:?}", message);
         let (command, params) = Command::parse_command(&message)?;
 
-        let responses = self.handle_client_command(&command, params)?;
+        let responses = self.handle_client_command(&command, &params)?;
 
         println!("handled {:?} with: {:?}", command, responses);
         connection.send_messages(&responses.iter().map(|r| r).collect::<Vec<&RESP>>())?;
@@ -112,6 +112,7 @@ impl ClientConnectionHandler for ReplicaConnection {
         Ok(())
     }
 }
+
 pub fn start_replication(redis: RedisServer, replica_of: Binding) -> Result<()> {
     let thread_name = format!("replica-master-{}", replica_of);
     thread::Builder::new().name(thread_name.clone()).spawn(move || {

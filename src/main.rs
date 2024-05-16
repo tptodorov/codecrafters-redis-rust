@@ -4,11 +4,11 @@ use std::net::TcpListener;
 use anyhow::Result;
 
 use net::{Binding, Port};
-use crate::master::{MasterConnection, MasterServer};
 
+use crate::connection::ClientConnectionHandler;
+use crate::master::{MasterConnection, MasterServer};
 use crate::redis::RedisServer;
 use crate::replica::{ReplicaConnection, start_replication};
-use crate::connection::ClientConnectionHandler;
 
 mod resp;
 mod redis;

@@ -55,21 +55,20 @@ impl RedisServer {
         Ok(server)
     }
 
-    pub(crate) fn handle_command(&self, cmd: &Command, params: &[RESP]) -> Result<Vec<RESP>> {
+    pub(crate) fn handle_command(&self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
         match cmd {
             Command::PING => Ok(vec![RESP::String("PONG".to_string())]),
             Command::ECHO => {
-                let param1 = params.first().unwrap_or(&RESP::Null);
-                match param1 {
-                    RESP::Bulk(param1) => Ok(vec![RESP::Bulk(param1.to_owned())]),
-                    _ => Err(anyhow!("invalid echo  command {:?}", params)),
+                match params.first() {
+                    Some(param1) => Ok(vec![RESP::Bulk(param1.to_owned())]),
+                    None => Err(anyhow!("invalid echo  command {:?}", params)),
                 }
             }
             Command::SET => {
                 // minimal implementation of https://redis.io/docs/latest/commands/set/
-                match params {
+                match &params[..] {
                     // SET key value
-                    [RESP::Bulk(key), RESP::Bulk(value), set_options @ ..] => {
+                    [key, value, set_options @ ..] => {
                         let px_expiration_ms = extract_option_u64(params, "PX")?;
                         let valid_until = px_expiration_ms
                             .iter()
@@ -85,7 +84,7 @@ impl RedisServer {
                 // minimal implementation of https://redis.io/docs/latest/commands/get/
                 // GET key
                 match params {
-                    [RESP::Bulk(key)] => {
+                    [key] => {
                         Ok(vec![
                             // extract valid value from store
                             self.store.read().unwrap().0.get(key)
@@ -103,7 +102,7 @@ impl RedisServer {
             Command::TYPE => {
                 // minimal implementation of https://redis.io/docs/latest/commands/type/
                 match params {
-                    [RESP::Bulk(key)] => {
+                    [key] => {
                         Ok(vec![
                             RESP::String(
                                 self.store.read().unwrap().0.get(key)
@@ -122,7 +121,7 @@ impl RedisServer {
                 // XADD key id field value [field value ...]
                 match params {
                     // SET key value
-                    [RESP::Bulk(key), RESP::Bulk(id), key_value_pairs @ ..] => {
+                    [key, id, key_value_pairs @ ..] => {
                         let mut stream_data = vec![];
                         let mut iter = key_value_pairs.iter();
                         while let Some((key, value)) = iter.next().zip(iter.next()) {
@@ -140,7 +139,7 @@ impl RedisServer {
                 // XRANGE key id-from id-to
                 match params {
                     // SET key value
-                    [RESP::Bulk(key), RESP::Bulk(from_id), RESP::Bulk(to_id)] => {
+                    [key, from_id, to_id] => {
                         let from_id =
                             if from_id == "-" {
                                 StreamEntryId::MIN
@@ -219,26 +218,22 @@ impl RedisServer {
 
             Command::KEYS => {
                 // minimal implementation of https://redis.io/docs/latest/commands/keys/
-                match params {
-                    [RESP::Bulk(_pattern)] => {
-                        Ok(vec![
-                            RESP::Array(
-                                self.store.read().unwrap().0.keys()
-                                    // TODO filter keys by pattern
-                                    // wrap it in bulk
-                                    .map(|v| RESP::Bulk(v.to_string()))
-                                    .collect()
-                            )
-                        ])
-                    }
-                    _ => Err(anyhow!("invalid get command {:?}", params)),
-                }
+                Ok(vec![
+                    RESP::Array(
+                        self.store.read().unwrap().0.keys()
+                            // TODO filter keys by pattern
+                            // wrap it in bulk
+                            .map(|v| RESP::Bulk(v.to_string()))
+                            .collect()
+                    )
+                ])
             }
+
             Command::INFO => {
                 // minimal implementation of https://redis.io/docs/latest/commands/info/
                 // INFO replication
                 match params {
-                    [RESP::Bulk(sub_command)] => {
+                    [sub_command] => {
                         match sub_command.to_ascii_uppercase().as_str() {
                             "REPLICATION" => {
                                 let role = if !self.is_master { "slave" } else { "master" };
@@ -262,7 +257,7 @@ impl RedisServer {
                 // minimal implementation of https://redis.io/docs/latest/commands/info/
                 // INFO replication
                 match params {
-                    [RESP::Bulk(sub_command), RESP::Bulk(key) ] => {
+                    [sub_command, key] => {
                         match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
                             ("GET", "dir") => {
                                 Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.db_dir.clone())])])
@@ -281,7 +276,7 @@ impl RedisServer {
         }
     }
 
-    fn xread_values(&self, keys: &[RESP], key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<RESP> {
+    fn xread_values(&self, keys: &[String], key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<RESP> {
         let mut all_results = vec![];
         let guard = self.store.read().unwrap();
 
@@ -334,7 +329,7 @@ impl RedisServer {
 
         let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
 
-        let key_results = self.store.write().unwrap().add_listener(&keys, this_listener.clone());
+        let _key_results = self.store.write().unwrap().add_listener(&keys, this_listener.clone());
 
         let (lock, cvar) = this_listener.deref();
         let mut event_guard = lock.lock().unwrap();
@@ -377,33 +372,20 @@ fn encode_stream_entries(entries: &Vec<(String, String)>) -> RESP {
 }
 
 
-fn extract_option_u64(params: &[RESP], option_name: &str) -> Result<Option<u64>> {
-    let value = extract_option_string(params, option_name)?;
+fn extract_option_u64(params: &[String], option_name: &str) -> Result<Option<u64>> {
+    let value = extract_option_string(params, option_name);
     let value = value.map(|v| v.parse::<u64>()).transpose()?;
     Ok(value)
 }
 
-fn extract_option_string(params: &[RESP], option_name: &str) -> Result<Option<String>> {
+fn extract_option_string(params: &[String], option_name: &str) -> Option<String> {
     let option_name = option_name.to_uppercase();
-    let mut set_options = params.iter();
-    loop {
-        match set_options.next() {
-            None => break,
-            Some(RESP::Bulk(option)) => {
-                if option.to_uppercase() == option_name {
-                    if let Some(RESP::Bulk(ms)) = set_options.next() {
-                        return Ok(Some(ms.clone()));
-                    }
-                    bail!("invalid {} option", option_name);
-                }
-            }
-            _ => continue,
-        }
-    }
-    Ok(None)
+    params.iter()
+        .position(|e| e.to_string().to_uppercase() == option_name)
+        .map(|i| params[i + 1].clone())
 }
 
-fn extract_option_list<'a>(params: &'a [RESP], option_name: &str) -> Option<&'a [RESP]> {
+fn extract_option_list<'a>(params: &'a [String], option_name: &str) -> Option<&'a [String]> {
     let option_name = option_name.to_uppercase();
     params.iter()
         .position(|e| e.to_string().to_uppercase() == option_name)

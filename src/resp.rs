@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::bail;
 use anyhow::Result;
+
 use crate::writer::CountingWriter;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,16 +38,6 @@ impl Display for RESP {
     }
 }
 
-pub struct RESPS<'a>(pub &'a [RESP]);
-
-impl<'a> Display for RESPS<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for item in self.0 {
-            write!(f, "{} ", item)?;
-        }
-        Ok(())
-    }
-}
 
 pub struct RESPConnection {
     stream: TcpStream,
