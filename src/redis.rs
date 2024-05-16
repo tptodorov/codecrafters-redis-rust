@@ -192,7 +192,7 @@ impl RedisServer {
 
                         // wait for any of the keys to be added
                         if let Some(block_ms) = block_ms {
-                            let timeout = Duration::from_millis(block_ms);
+                            let timeout = if block_ms == 0 { Duration::MAX } else { Duration::from_millis(block_ms) };
                             println!("will block for {:?}", timeout);
                             let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
 
