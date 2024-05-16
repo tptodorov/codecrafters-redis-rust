@@ -3,10 +3,11 @@ use std::net::TcpListener;
 
 use anyhow::Result;
 
-use net::{Binding, Port};
+use net::Binding;
 
 use crate::connection::ClientConnectionHandler;
 use crate::master::{MasterConnection, MasterServer};
+use crate::net::DEFAULT_PORT;
 use crate::redis::RedisServer;
 use crate::replica::{ReplicaConnection, start_replication};
 
@@ -20,9 +21,8 @@ mod command;
 mod master;
 mod replica;
 mod connection;
+mod store;
 
-
-const DEFAULT_PORT: Port = 6379;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -46,11 +46,7 @@ fn main() -> Result<()> {
         }
         if let Some("--replicaof") = option {
             let host_port = args_str.next().unwrap().to_string();
-            let mut seq = host_port.split(' ');
-            let host = seq.next().unwrap();
-            let default_port_str = DEFAULT_PORT.to_string();
-            let port = seq.next().unwrap_or(&default_port_str).parse::<Port>()?;
-            let master = Binding(host.to_string(), port);
+            let master = host_port.parse::<Binding>()?;
             println!("replicating from master {}", master);
             replica_of = Some(master)
         }

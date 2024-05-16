@@ -53,10 +53,6 @@ impl ReplicaConnection {
                 let _response = self.redis.handle_command(cmd, params)?;
                 // when replicating responses are ignored
                 Ok(vec![])
-                // if matches!(cmd, Command::PING) {
-                //     Ok(response)
-                // } else {
-                // }
             }
         }
     }
@@ -91,7 +87,7 @@ impl ReplicaConnection {
             println!("@{}: replica connection handled {:?} and responded to master: {:?}", thread_name, command, responses);
 
             self.replicated_offset += len;
-            println!("replica after message {:?} offset is {}", message, self.replicated_offset);
+            println!("@{}: replica after message {:?} offset is {}", thread_name, message, self.replicated_offset);
         }
     }
 }

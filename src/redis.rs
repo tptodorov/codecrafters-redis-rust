@@ -10,8 +10,8 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::command::Command;
 use crate::net::Binding;
-use crate::rdb::{KVStore, StoredValue, StreamEntryId, StreamEvent};
 use crate::resp::RESP;
+use crate::store::{KVStore, StoredValue, StreamEntryId, StreamEvent};
 
 #[derive(Default)]
 pub struct LogStore {

@@ -1,6 +1,8 @@
 use std::net::TcpStream;
-use crate::net::Binding;
+
 use anyhow::{bail, Result};
+
+use crate::net::Binding;
 use crate::resp::{RESP, RESPConnection};
 
 pub struct ReplicaClient {
@@ -9,12 +11,12 @@ pub struct ReplicaClient {
 }
 
 impl ReplicaClient {
-    pub fn new(binding: &Binding) -> Result<Self> {
-        let stream = TcpStream::connect(binding.to_string())?;
-        println!("connected to: {}", binding);
+    pub fn new(master: &Binding) -> Result<Self> {
+        let stream = TcpStream::connect(master.to_string())?;
+        println!("connected to master: {}", master);
         Ok(ReplicaClient {
             stream: RESPConnection::new(stream),
-            _binding: binding.clone(),
+            _binding: master.clone(),
         })
     }
 
@@ -56,7 +58,7 @@ impl ReplicaClient {
                 println!("waiting for rds data");
                 // expect master to send the RDB in a Bulk like binary
                 if let RESP::File(rds) = self.stream.read_binary()? {
-                    println!("read binary {} rds: {:?}", rds.len(), rds);
+                    println!("got binary rds of: {} bytes", rds.len());
                     return Ok(rds);
                 }
             }
@@ -72,5 +74,4 @@ impl ReplicaClient {
             _ => bail!("replication message must be an array: {}", psync_response.unwrap())
         }
     }
-
 }
