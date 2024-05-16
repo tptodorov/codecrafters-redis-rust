@@ -1,15 +1,16 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+use std::ops::Deref;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, bail, Result};
 
 use crate::command::Command;
 use crate::net::Binding;
-use crate::rdb::{KVStore, StoredValue, StreamEntryId};
+use crate::rdb::{KVStore, StoredValue, StreamEntryId, StreamEvent};
 use crate::resp::RESP;
 
 #[derive(Default)]
@@ -69,12 +70,12 @@ impl RedisServer {
                 match params {
                     // SET key value
                     [RESP::Bulk(key), RESP::Bulk(value), set_options @ ..] => {
-                        let px_expiration_ms = extract_px_expiration(set_options)?;
+                        let px_expiration_ms = extract_option_u64(params, "PX")?;
                         let valid_until = px_expiration_ms
                             .iter()
                             .flat_map(|&expiration_ms| SystemTime::now().checked_add(Duration::from_millis(expiration_ms)))
                             .next();
-                        self.store.write().unwrap().0.insert(key.clone(), StoredValue::from_string(value.clone(), valid_until));
+                        self.store.write().unwrap().0.insert(key.clone(), StoredValue::from_string(key, value, valid_until));
                         Ok(vec![RESP::String("OK".to_string())])
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
@@ -168,46 +169,87 @@ impl RedisServer {
                 }
             }
             Command::XREAD => {
+                let block_ms = extract_option_u64(params, "BLOCK")?;
+                let streams = extract_option_list(params, "streams");
                 // minimal implementation of https://redis.io/commands/xread/
-                match params {
-                    [RESP::Bulk(sub_command), sub_params @ ..] => {
-                        // only support streams
-                        if sub_command.to_uppercase() != "STREAMS" {
-                            bail!("unknown subcommand {}", sub_command);
-                        }
+                match streams {
+                    Some(sub_params) => {
                         // XREAD stream key1 key2 id1 id2
-                        let (keys, ids) = sub_params.split_at(params.len() / 2);
-                        let mut all_results = vec![];
-                        for (key, id) in keys.iter().zip(ids.iter()) {
-                            if !matches!(id, RESP::Bulk(_)) || !matches!(key, RESP::Bulk(_)) {
-                                bail!("invalid XREAD command");
-                            }
-                            let key = key.to_string();
-                            let from_id = id.to_string();
-                            let from_id =
-                                from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?;
+                        let (keys, ids) = sub_params.split_at(sub_params.len() / 2);
+                        let key_id_pairs: Result<HashMap<String, StreamEntryId>> = keys.iter().zip(ids.iter())
+                            .map(|(key, id)| {
+                                let key = key.to_string();
+                                let from_id = id.to_string();
+                                let from_id = from_id.parse::<StreamEntryId>()?;
+                                Ok((key, from_id))
+                            })
+                            .collect();
+                        let key_id_pairs = key_id_pairs?;
 
-                            let key_results = self.store.read().unwrap()
-                                .range_stream(&key, from_id, StreamEntryId::MAX)
-                                .map_or_else(|err| RESP::Error(err.to_string()),
-                                             |results| {
-                                                 let results = results.iter().map(|(id, entries)| {
-                                                     RESP::Array(vec![
-                                                         RESP::Bulk(id.clone()),
-                                                         encode_stream_entries(entries),
-                                                     ])
-                                                 }).collect();
-                                                 RESP::Array(results)
-                                             });
+                        let is_acceptable = |stream_event: StreamEvent| {
+                            key_id_pairs.get(&stream_event.0).map_or(false, |id| stream_event.1 > *id)
+                        };
+
+                        // wait for any of the keys to be added
+                        if let Some(block_ms) = block_ms {
+                            let timeout = Duration::from_millis(block_ms);
+                            println!("will block for {:?}", timeout);
+                            let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
+
+                            let key_results = self.store.write().unwrap().add_listener(&key_id_pairs, this_listener.clone());
+
+                            let (lock, cvar) = this_listener.deref();
+                            let mut event_guard = lock.lock().unwrap();
+                            while !event_guard.clone().map_or(false, is_acceptable) {
+                                let result = cvar.wait_timeout_while(
+                                    event_guard, timeout,
+                                    |event| !event.clone().map_or(false, is_acceptable),
+                                ).unwrap();
+                                event_guard = result.0;
+                                if result.1.timed_out() {
+                                    println!("timeout of the blocked xread");
+                                    // timed-out, meaning no new values are added
+                                    return Ok(vec![RESP::Null]);
+                                }
+                            }
+                            // continue by running the normal non-blocking op
+                        }
+
+                        let mut all_results = vec![];
+                        let guard = self.store.read().unwrap();
+
+                        // results should be in the same order as the in the command
+                        for key in keys {
+                            let key = key.to_string();
+                            let from_id = key_id_pairs.get(&key).unwrap();
+
+                            let key_results = guard
+                                .read_stream(&key, from_id.clone(), StreamEntryId::MAX)?;
+
+                            let results: Vec<RESP> = key_results.iter().map(|(id, entries)| {
+                                RESP::Array(vec![
+                                    RESP::Bulk(id.clone()),
+                                    encode_stream_entries(entries),
+                                ])
+                            }).collect();
+
+                            if results.is_empty() {
+                                continue;
+                            }
 
                             all_results.push(
                                 RESP::Array(vec![
                                     RESP::Bulk(key.to_string()),
-                                    key_results,
+                                    RESP::Array(results),
                                 ])
                             )
                         }
-                        Ok(vec![RESP::Array(all_results)])
+
+                        Ok(
+                            vec![
+                                if all_results.is_empty() { RESP::Null } else { RESP::Array(all_results) }
+                            ]
+                        )
                     }
                     _ => bail!("invalid XREAD command"),
                 }
@@ -299,22 +341,31 @@ fn encode_stream_entries(entries: &Vec<(String, String)>) -> RESP {
     RESP::Array(array)
 }
 
-fn extract_px_expiration(params: &[RESP]) -> Result<Option<u64>> {
+
+fn extract_option_u64(params: &[RESP], option_name: &str) -> Result<Option<u64>> {
+    let option_name = option_name.to_uppercase();
     let mut set_options = params.iter();
     loop {
         match set_options.next() {
             None => break,
             Some(RESP::Bulk(option)) => {
-                if option.to_uppercase() == "PX" {
+                if option.to_uppercase() == option_name {
                     if let Some(RESP::Bulk(ms)) = set_options.next() {
                         let ms = ms.to_string().parse::<u64>()?;
                         return Ok(Some(ms));
                     }
-                    bail!("invalid PX option");
+                    bail!("invalid {} option", option_name);
                 }
             }
             _ => continue,
         }
     }
     Ok(None)
+}
+
+fn extract_option_list<'a>(params: &'a [RESP], option_name: &str) -> Option<&'a [RESP]> {
+    let option_name = option_name.to_uppercase();
+    params.iter()
+        .position(|e| e.to_string().to_uppercase() == option_name)
+        .map(|i| &params[i + 1..])
 }

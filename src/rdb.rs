@@ -3,11 +3,14 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::ops::Deref;
 use std::str::FromStr;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
+#[derive(Clone, Debug)]
 pub struct StreamEntryId(u64, u64);
 
 impl PartialEq<Self> for StreamEntryId {
@@ -34,10 +37,11 @@ impl FromStr for StreamEntryId {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.split('-');
-        let first = parts.next().ok_or_else(|| anyhow!("invalid stream entry id: {}", s))?;
-        let second = parts.next().ok_or_else(|| anyhow!("invalid stream entry id: {}", s))?;
-        Ok(Self(first.parse::<u64>()?, second.parse::<u64>()?))
+        let parts = s.split('-').collect::<Vec<&str>>();
+        match parts[..] {
+            [first, second] => Ok(Self(first.parse()?, second.parse()?)),
+            _ => Ok(Self(s.parse()?, 0))
+        }
     }
 }
 
@@ -48,7 +52,6 @@ impl Display for StreamEntryId {
 }
 
 impl StreamEntryId {
-
     pub(crate) const MIN: Self = Self(0, 0);
     pub(crate) const MAX: Self = Self(u64::MAX, u64::MAX);
 
@@ -97,29 +100,40 @@ impl StreamEntryId {
     }
 }
 
-
+#[derive(Clone, Debug)]
 pub struct StreamEntry(StreamEntryId, Vec<(String, String)>);
 
-pub enum Value {
+#[derive(Clone, Debug)]
+pub struct StreamEvent(pub(crate) String, pub(crate) StreamEntryId);
+
+#[derive(Clone, Debug)]
+pub struct StreamListener(Arc<(Mutex<Option<StreamEvent>>, Condvar)>);
+
+impl StreamListener {}
+
+enum Value {
     String(String),
-    Stream(Vec<StreamEntry>),
+    Stream(Vec<StreamEntry>, Vec<StreamListener>),
 }
 
 pub struct StoredValue {
     value: Value,
     valid_until: Option<SystemTime>,
+    key: String,
 }
 
 impl StoredValue {
-    pub fn from_string(value: String, valid_until: Option<SystemTime>) -> Self {
+    pub fn from_string(key: &str, value: &str, valid_until: Option<SystemTime>) -> Self {
         StoredValue {
-            value: Value::String(value),
+            key: key.to_string(),
+            value: Value::String(value.to_string()),
             valid_until,
         }
     }
-    pub fn empty_stream() -> Self {
+    pub fn empty_stream(key: &str) -> Self {
         StoredValue {
-            value: Value::Stream(vec![]),
+            key: key.to_string(),
+            value: Value::Stream(Vec::new(), Vec::new()),
             valid_until: None,
         }
     }
@@ -138,7 +152,8 @@ impl StoredValue {
 
     pub fn add_entry(&mut self, id_pattern: String, entry: Vec<(String, String)>) -> Result<String> {
         match &mut self.value {
-            Value::Stream(ref mut entries) => {
+            Value::Stream(ref mut entries, ref mut listeners) => {
+
                 // new id is either explicit or pattern
                 let new_id: StreamEntryId = if id_pattern.contains('*') {
                     StreamEntryId::from_pattern(id_pattern, entries.last().map(|e| &e.0))?
@@ -157,18 +172,49 @@ impl StoredValue {
                     }
                 }
                 let new_ids = new_id.to_string();
-                entries.push(StreamEntry(new_id, entry));
+                let stream_entry = StreamEntry(new_id.clone(), entry);
+                entries.push(stream_entry.clone());
+
+                let event = StreamEvent(self.key.clone(), new_id);
+
+                for l in listeners {
+                    let (lock, cvar) = l.0.deref();
+                    lock.lock().unwrap().replace(event.clone());
+                    cvar.notify_one();
+                }
+
+
                 Ok(new_ids)
             }
             _ => bail!("not a stream"),
         }
     }
-    pub fn range(&self, from_id: &StreamEntryId, to_id: &StreamEntryId) -> Result<Vec<&StreamEntry>> {
+
+    fn add_listener(&mut self, listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>) -> Result<StreamListener> {
+        match &mut self.value {
+            Value::Stream(entries, listeners) => {
+                let listener1 = StreamListener(listener);
+                listeners.push(listener1.clone());
+                Ok(listener1)
+            }
+            _ => bail!("not a stream"),
+        }
+    }
+
+    pub fn range(&self, from_id: &StreamEntryId, to_id: &StreamEntryId, inclusive_range: bool) -> Result<Vec<&StreamEntry>> {
         match &self.value {
-            Value::Stream(entries) => {
+            Value::Stream(entries, _) => {
                 Ok(entries
                     .iter()
-                    .filter(|&e| e.0 >= *from_id && e.0 <= *to_id)
+                    .filter(|&e| {
+                        let inclusive = e.0 >= *from_id && e.0 <= *to_id;
+                        let exclusive = e.0 > *from_id && e.0 < *to_id;
+                        if inclusive_range {
+                            inclusive
+                        } else {
+                            exclusive
+                        }
+                    })
                     .collect()
                 )
             }
@@ -179,7 +225,7 @@ impl StoredValue {
     pub fn value_type(&self) -> &str {
         match &self.value {
             Value::String(_) => if self.value().is_none() { "none" } else { "string" },
-            Value::Stream(_) => { "stream" }
+            Value::Stream(_, _) => { "stream" }
         }
     }
 }
@@ -189,7 +235,7 @@ pub struct KVStore(pub HashMap<String, StoredValue>);
 impl KVStore {
     pub fn insert_stream(&mut self, key: &str, id_pattern: &str, stream_data: Vec<(String, String)>) -> Result<String> {
         if !self.0.contains_key(key) {
-            self.0.insert(key.to_string(), StoredValue::empty_stream());
+            self.0.insert(key.to_string(), StoredValue::empty_stream(key));
         }
 
         if let Some(value) = self.0.get_mut(key) {
@@ -199,14 +245,34 @@ impl KVStore {
         bail!("stream not found {}", key);
     }
 
-    pub fn range_stream(& self, key: &str, from_id: StreamEntryId, to_id: StreamEntryId) -> Result<Vec<(String, &Vec<(String, String)>)>>  {
+    pub fn range_stream(&self, key: &str, from_id: StreamEntryId, to_id: StreamEntryId) -> Result<Vec<(String, &Vec<(String, String)>)>> {
         self.0.get(key).map_or_else(|| bail!("stream not found {}", key), |value| {
             Ok(value
-                .range(&from_id, &to_id)?
+                .range(&from_id, &to_id, true)?
                 .iter()
                 .map(|&entry| (entry.0.to_string(), &entry.1))
                 .collect())
         })
+    }
+
+    pub fn read_stream(&self, key: &str, from_id: StreamEntryId, to_id: StreamEntryId) -> Result<Vec<(String, &Vec<(String, String)>)>> {
+        self.0.get(key).map_or_else(|| bail!("stream not found {}", key), |value| {
+            Ok(value
+                .range(&from_id, &to_id, false)?
+                .iter()
+                .map(|&entry| (entry.0.to_string(), &entry.1))
+                .collect())
+        })
+    }
+
+    pub fn add_listener(&mut self, key_id_pairs: &HashMap<String, StreamEntryId>, listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>) -> Result<Vec<StreamListener>> {
+        let mut listeners = vec![];
+        for (key, id) in key_id_pairs {
+            if let Some(value) = self.0.get_mut(key) {
+                listeners.push(value.add_listener(listener.clone())?);
+            }
+        }
+        Ok(listeners)
     }
 
     // Loading of the RDB file is based on the https://rdb.fnordig.de/file_format.html
@@ -261,7 +327,7 @@ impl KVStore {
                     println!("reading value type {} with timestamp {:?}", op, timestamp);
                     let key = read_string(&mut reader)?;
                     let value = read_string(&mut reader)?;
-                    self.0.insert(key, StoredValue::from_string(value, timestamp.map(|epoc_ms| SystemTime::UNIX_EPOCH + Duration::from_millis(epoc_ms))));
+                    self.0.insert(key.clone(), StoredValue::from_string(&key, &value, timestamp.map(|epoc_ms| SystemTime::UNIX_EPOCH + Duration::from_millis(epoc_ms))));
                     // reset
                     timestamp = None;
                 }
