@@ -222,6 +222,17 @@ impl StoredValue {
         }
     }
 
+    pub fn last_id(&self) -> Result<StreamEntryId> {
+        match &self.value {
+            Value::Stream(entries, _) => {
+                Ok(entries
+                    .last().map_or(StreamEntryId::MIN, |e| e.0.clone())
+                )
+            }
+            _ => bail!("not a stream"),
+        }
+    }
+
     pub fn value_type(&self) -> &str {
         match &self.value {
             Value::String(_) => if self.value().is_none() { "none" } else { "string" },
@@ -265,9 +276,13 @@ impl KVStore {
         })
     }
 
-    pub fn add_listener(&mut self, key_id_pairs: &HashMap<String, StreamEntryId>, listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>) -> Result<Vec<StreamListener>> {
+    pub fn latest_stream(&self, key: &str) -> Result<StreamEntryId> {
+        self.0.get(key).map_or_else(|| bail!("stream not found {}", key), |value| value.last_id())
+    }
+
+    pub fn add_listener(&mut self, keys: &Vec<&String>, listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>) -> Result<Vec<StreamListener>> {
         let mut listeners = vec![];
-        for (key, id) in key_id_pairs {
+        for &key in keys {
             if let Some(value) = self.0.get_mut(key) {
                 listeners.push(value.add_listener(listener.clone())?);
             }

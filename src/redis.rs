@@ -169,87 +169,49 @@ impl RedisServer {
                 }
             }
             Command::XREAD => {
-                let block_ms = extract_option_u64(params, "BLOCK")?;
+                let block_ms: Option<u64> = extract_option_u64(params, "BLOCK")?;
                 let streams = extract_option_list(params, "streams");
                 // minimal implementation of https://redis.io/commands/xread/
                 match streams {
                     Some(sub_params) => {
                         // XREAD stream key1 key2 id1 id2
                         let (keys, ids) = sub_params.split_at(sub_params.len() / 2);
-                        let key_id_pairs: Result<HashMap<String, StreamEntryId>> = keys.iter().zip(ids.iter())
-                            .map(|(key, id)| {
+                        let key_id_pairs: HashMap<String, StreamEntryId> = {
+                            let mut pairs: HashMap<String, StreamEntryId> = HashMap::new();
+                            let store = self.store.read().unwrap();
+                            for (key, id) in keys.iter().zip(ids.iter()) {
                                 let key = key.to_string();
                                 let from_id = id.to_string();
-                                let from_id = from_id.parse::<StreamEntryId>()?;
-                                Ok((key, from_id))
-                            })
-                            .collect();
-                        let key_id_pairs = key_id_pairs?;
-
-                        let is_acceptable = |stream_event: StreamEvent| {
-                            key_id_pairs.get(&stream_event.0).map_or(false, |id| stream_event.1 > *id)
+                                let from_id = if from_id == "$" {
+                                    store.latest_stream(&key)?
+                                } else {
+                                    from_id.parse::<StreamEntryId>()?
+                                };
+                                pairs.insert(key, from_id);
+                            }
+                            pairs
                         };
 
-                        // wait for any of the keys to be added
-                        if let Some(block_ms) = block_ms {
-                            let timeout = if block_ms == 0 { Duration::MAX } else { Duration::from_millis(block_ms) };
-                            println!("will block for {:?}", timeout);
-                            let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
-
-                            let key_results = self.store.write().unwrap().add_listener(&key_id_pairs, this_listener.clone());
-
-                            let (lock, cvar) = this_listener.deref();
-                            let mut event_guard = lock.lock().unwrap();
-                            while !event_guard.clone().map_or(false, is_acceptable) {
-                                let result = cvar.wait_timeout_while(
-                                    event_guard, timeout,
-                                    |event| !event.clone().map_or(false, is_acceptable),
-                                ).unwrap();
-                                event_guard = result.0;
-                                if result.1.timed_out() {
-                                    println!("timeout of the blocked xread");
-                                    // timed-out, meaning no new values are added
-                                    return Ok(vec![RESP::Null]);
+                        // behaves quite differently depending on the blocking option
+                        match block_ms {
+                            Some(block_ms) => {
+                                // fetch any existing or new data that arrives
+                                let existing_values = self.xread_values(keys, &key_id_pairs)?;
+                                if existing_values != RESP::Null {
+                                    return Ok(vec![existing_values]);
+                                }
+                                // block until some data arrives
+                                if self.block_xread(block_ms, &key_id_pairs)? {
+                                    Ok(vec![RESP::Null])
+                                } else {
+                                    Ok(vec![self.xread_values(keys, &key_id_pairs)?])
                                 }
                             }
-                            // continue by running the normal non-blocking op
-                        }
-
-                        let mut all_results = vec![];
-                        let guard = self.store.read().unwrap();
-
-                        // results should be in the same order as the in the command
-                        for key in keys {
-                            let key = key.to_string();
-                            let from_id = key_id_pairs.get(&key).unwrap();
-
-                            let key_results = guard
-                                .read_stream(&key, from_id.clone(), StreamEntryId::MAX)?;
-
-                            let results: Vec<RESP> = key_results.iter().map(|(id, entries)| {
-                                RESP::Array(vec![
-                                    RESP::Bulk(id.clone()),
-                                    encode_stream_entries(entries),
-                                ])
-                            }).collect();
-
-                            if results.is_empty() {
-                                continue;
+                            None => {
+                                // only fetch existing data
+                                Ok(vec![self.xread_values(keys, &key_id_pairs)?])
                             }
-
-                            all_results.push(
-                                RESP::Array(vec![
-                                    RESP::Bulk(key.to_string()),
-                                    RESP::Array(results),
-                                ])
-                            )
                         }
-
-                        Ok(
-                            vec![
-                                if all_results.is_empty() { RESP::Null } else { RESP::Array(all_results) }
-                            ]
-                        )
                     }
                     _ => bail!("invalid XREAD command"),
                 }
@@ -319,6 +281,79 @@ impl RedisServer {
         }
     }
 
+    fn xread_values(&self, keys: &[RESP], key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<RESP> {
+        let mut all_results = vec![];
+        let guard = self.store.read().unwrap();
+
+        // results should be in the same order as the in the command
+        for key in keys {
+            let key = key.to_string();
+            let from_id = key_id_pairs.get(&key).unwrap();
+
+            let key_results = guard
+                .read_stream(&key, from_id.clone(), StreamEntryId::MAX)?;
+
+            let results: Vec<RESP> = key_results.iter().map(|(id, entries)| {
+                RESP::Array(vec![
+                    RESP::Bulk(id.clone()),
+                    encode_stream_entries(entries),
+                ])
+            }).collect();
+
+            if results.is_empty() {
+                continue;
+            }
+
+            all_results.push(
+                RESP::Array(vec![
+                    RESP::Bulk(key.to_string()),
+                    RESP::Array(results),
+                ])
+            )
+        }
+
+        Ok(
+            if all_results.is_empty() { RESP::Null } else { RESP::Array(all_results) }
+        )
+    }
+
+    /**
+    blocks for until either timeout or new records were added.
+    returns true if it timed out.
+     */
+    fn block_xread(&self, block_ms: u64, key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<bool> {
+// wait for any of the keys to be added
+        let timeout = if block_ms == 0 { Duration::MAX } else { Duration::from_millis(block_ms) };
+        println!("will block for {:?}", timeout);
+
+        let keys = key_id_pairs.keys().collect::<Vec<&String>>();
+
+        let is_acceptable = |stream_event: StreamEvent| {
+            key_id_pairs.get(&stream_event.0).map_or(false, |id| stream_event.1 > *id)
+        };
+
+        let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
+
+        let key_results = self.store.write().unwrap().add_listener(&keys, this_listener.clone());
+
+        let (lock, cvar) = this_listener.deref();
+        let mut event_guard = lock.lock().unwrap();
+        while !event_guard.clone().map_or(false, is_acceptable) {
+            let result = cvar.wait_timeout_while(
+                event_guard, timeout,
+                |event| !event.clone().map_or(false, is_acceptable),
+            ).unwrap();
+            event_guard = result.0;
+            if result.1.timed_out() {
+                println!("timeout of the blocked xread");
+                // timed-out, meaning no new values are added
+                return Ok(true);
+            }
+        }
+        // continue by running the normal non-blocking op
+        Ok(false)
+    }
+
     fn try_load_db(&self) -> Result<()> {
         let db_file = Path::new(&self.db_dir).join(&self.db_filename);
         if db_file.exists() {
@@ -343,6 +378,12 @@ fn encode_stream_entries(entries: &Vec<(String, String)>) -> RESP {
 
 
 fn extract_option_u64(params: &[RESP], option_name: &str) -> Result<Option<u64>> {
+    let value = extract_option_string(params, option_name)?;
+    let value = value.map(|v| v.parse::<u64>()).transpose()?;
+    Ok(value)
+}
+
+fn extract_option_string(params: &[RESP], option_name: &str) -> Result<Option<String>> {
     let option_name = option_name.to_uppercase();
     let mut set_options = params.iter();
     loop {
@@ -351,8 +392,7 @@ fn extract_option_u64(params: &[RESP], option_name: &str) -> Result<Option<u64>>
             Some(RESP::Bulk(option)) => {
                 if option.to_uppercase() == option_name {
                     if let Some(RESP::Bulk(ms)) = set_options.next() {
-                        let ms = ms.to_string().parse::<u64>()?;
-                        return Ok(Some(ms));
+                        return Ok(Some(ms.clone()));
                     }
                     bail!("invalid {} option", option_name);
                 }
