@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::bail;
 use anyhow::Result;
 
-use crate::writer::CountingWriter;
+use crate::io::writer::CountingWriter;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RESP {

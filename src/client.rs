@@ -1,9 +1,10 @@
+use crate::io::net::Binding;
+use crate::protocol::resp::RESPConnection;
+use crate::protocol::resp::RESP;
+
 use std::net::TcpStream;
 
 use anyhow::{bail, Result};
-
-use crate::net::Binding;
-use crate::resp::{RESP, RESPConnection};
 
 pub struct ReplicaClient {
     _binding: Binding,
@@ -21,7 +22,8 @@ impl ReplicaClient {
     }
 
     pub fn ping_pong(&mut self) -> Result<()> {
-        self.stream.send_message(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
+        self.stream
+            .send_message(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
         if let (_, Some(RESP::String(str))) = self.stream.read_message()? {
             if str.to_uppercase() == "PONG" {
                 return Ok(());
@@ -33,7 +35,10 @@ impl ReplicaClient {
     pub fn replconf(&mut self, params: &[&str]) -> Result<()> {
         let mut command = vec![RESP::Bulk("REPLCONF".to_string())];
 
-        let mut bulk_params = params.into_iter().map(|param| RESP::Bulk(param.to_string())).collect::<Vec<RESP>>();
+        let mut bulk_params = params
+            .into_iter()
+            .map(|param| RESP::Bulk(param.to_string()))
+            .collect::<Vec<RESP>>();
         command.append(&mut bulk_params);
 
         self.stream.send_message(&RESP::Array(command))?;
@@ -45,9 +50,10 @@ impl ReplicaClient {
         bail!("replconfig failed");
     }
     pub fn psync(&mut self, replication_id: &str, offset: i64) -> Result<Vec<u8>> {
-        let command = vec![RESP::Bulk("PSYNC".to_string()),
-                           RESP::Bulk(replication_id.to_string()),
-                           RESP::Bulk(format!("{}", offset)),
+        let command = vec![
+            RESP::Bulk("PSYNC".to_string()),
+            RESP::Bulk(replication_id.to_string()),
+            RESP::Bulk(format!("{}", offset)),
         ];
 
         self.stream.send_message(&RESP::Array(command))?;
@@ -64,14 +70,17 @@ impl ReplicaClient {
             }
             bail!("psync unknown response: {}", str);
         }
-        bail!("psync failed: {}",psync_response.unwrap());
+        bail!("psync failed: {}", psync_response.unwrap());
     }
 
     pub fn read_replication_command(&mut self) -> Result<(usize, RESP)> {
         let (len, psync_response) = self.stream.read_message()?;
         match psync_response {
             Some(array @ RESP::Array(_)) => Ok((len, array)),
-            _ => bail!("replication message must be an array: {}", psync_response.unwrap())
+            _ => bail!(
+                "replication message must be an array: {}",
+                psync_response.unwrap()
+            ),
         }
     }
 }

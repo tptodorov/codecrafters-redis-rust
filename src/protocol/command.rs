@@ -3,17 +3,18 @@ use std::str::FromStr;
 
 use anyhow::bail;
 
-use crate::resp::RESP;
+use crate::protocol::resp::RESP;
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
     PING,
     ECHO,
+    // storage commands
     SET,
-    DEL,
     GET,
     TYPE,
     KEYS,
+    // replication commands
     PSYNC,
     INFO,
     REPLCONF,
@@ -28,7 +29,7 @@ pub enum Command {
 impl Command {
     /** command mutates the local storage */
     pub fn is_mutating(&self) -> bool {
-        matches!(self, Command::SET | Command::DEL )
+        matches!(self, Command::SET  )
     }
 
     pub(crate) fn parse_command(message: &RESP) -> anyhow::Result<(Command, Vec<String>)> {
@@ -61,7 +62,6 @@ impl FromStr for Command {
             "TYPE" => Ok(Command::TYPE),
             "SET" => Ok(Command::SET),
             "KEYS" => Ok(Command::KEYS),
-            "DEL" => Ok(Command::DEL),
             "PSYNC" => Ok(Command::PSYNC),
             "ECHO" => Ok(Command::ECHO),
             "INFO" => Ok(Command::INFO),
@@ -83,7 +83,6 @@ impl Display for Command {
             Command::ECHO => write!(f, "ECHO"),
             Command::SET => write!(f, "SET"),
             Command::KEYS => write!(f, "KEYS"),
-            Command::DEL => write!(f, "DEL"),
             Command::GET => write!(f, "GET"),
             Command::TYPE => write!(f, "TYPE"),
             Command::PSYNC => write!(f, "PSYNC"),

@@ -1,5 +1,6 @@
 use std::net::TcpStream;
-use crate::resp::RESPConnection;
+
+use crate::protocol::resp::RESPConnection;
 
 pub trait ClientConnectionHandler {
     fn handle_connection(&mut self, stream: TcpStream) -> anyhow::Result<()> {

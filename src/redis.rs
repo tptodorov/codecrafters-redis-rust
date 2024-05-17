@@ -4,14 +4,14 @@ use std::io::BufReader;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::command::Command;
-use crate::net::Binding;
-use crate::resp::RESP;
-use crate::store::{KVStore, StoredValue, StreamEntryId, StreamEvent};
+use crate::io::net::Binding;
+use crate::protocol::command::Command;
+use crate::protocol::resp::RESP;
+use crate::store::{KVStore, StreamEntryId, StreamEvent};
 
 #[derive(Default)]
 pub struct LogStore {
@@ -42,7 +42,7 @@ impl RedisServer {
 
         let server = RedisServer {
             binding,
-            store: Arc::new(RwLock::new(KVStore(HashMap::new()))),
+            store: Arc::new(RwLock::new(KVStore::new())),
             master_replid,
             is_master,
             log_store: Arc::new(RwLock::new(LogStore::default())),
@@ -50,7 +50,7 @@ impl RedisServer {
             db_filename: dbfilename.clone(),
         };
 
-        server.try_load_db()?;
+        server.load_rds()?;
 
         Ok(server)
     }
@@ -68,13 +68,9 @@ impl RedisServer {
                 // minimal implementation of https://redis.io/docs/latest/commands/set/
                 match &params[..] {
                     // SET key value
-                    [key, value, set_options @ ..] => {
-                        let px_expiration_ms = extract_option_u64(params, "PX")?;
-                        let valid_until = px_expiration_ms
-                            .iter()
-                            .flat_map(|&expiration_ms| SystemTime::now().checked_add(Duration::from_millis(expiration_ms)))
-                            .next();
-                        self.store.write().unwrap().0.insert(key.clone(), StoredValue::from_string(key, value, valid_until));
+                    [key, value, _set_options @ ..] => {
+                        let px_expiration = extract_option_u64(params, "PX")?.map(Duration::from_millis);
+                        self.store.write().unwrap().insert_value(&key, &value, px_expiration);
                         Ok(vec![RESP::String("OK".to_string())])
                     }
                     _ => Err(anyhow!("invalid set command {:?}", params)),
@@ -87,11 +83,9 @@ impl RedisServer {
                     [key] => {
                         Ok(vec![
                             // extract valid value from store
-                            self.store.read().unwrap().0.get(key)
-                                .iter().flat_map(|&value| value.value())
+                            self.store.read().unwrap().get_value(key)
                                 // wrap it in bulk
                                 .map(RESP::Bulk)
-                                .next()
                                 // Null if not found
                                 .unwrap_or(RESP::Null)
                         ])
@@ -105,9 +99,7 @@ impl RedisServer {
                     [key] => {
                         Ok(vec![
                             RESP::String(
-                                self.store.read().unwrap().0.get(key)
-                                    .iter().map(|&value| value.value_type())
-                                    .next()
+                                self.store.read().unwrap().get_type(key)
                                     .unwrap_or("none")
                                     .to_string()
                             )
@@ -220,9 +212,10 @@ impl RedisServer {
                 // minimal implementation of https://redis.io/docs/latest/commands/keys/
                 Ok(vec![
                     RESP::Array(
-                        self.store.read().unwrap().0.keys()
+                        self.store.read().unwrap().keys()
                             // TODO filter keys by pattern
                             // wrap it in bulk
+                            .iter()
                             .map(|v| RESP::Bulk(v.to_string()))
                             .collect()
                     )
@@ -349,7 +342,7 @@ impl RedisServer {
         Ok(false)
     }
 
-    fn try_load_db(&self) -> Result<()> {
+    fn load_rds(&self) -> Result<()> {
         let db_file = Path::new(&self.db_dir).join(&self.db_filename);
         if db_file.exists() {
             let file = File::open(&db_file)?;

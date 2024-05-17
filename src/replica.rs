@@ -4,11 +4,11 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 
 use crate::client::ReplicaClient;
-use crate::command::Command;
 use crate::connection::ClientConnectionHandler;
-use crate::net::Binding;
+use crate::io::net::Binding;
+use crate::protocol::command::Command;
+use crate::protocol::resp::{RESP, RESPConnection};
 use crate::redis::RedisServer;
-use crate::resp::{RESP, RESPConnection};
 
 #[derive(Clone)]
 pub struct ReplicaConnection {

@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 
-use crate::command::Command;
 use crate::connection::ClientConnectionHandler;
-use crate::net::{Binding, Port};
-use crate::rdb::empty_rdb;
+use crate::io::net::{Binding, Port};
+use crate::protocol::command::Command;
+use crate::protocol::rdb::empty_rdb;
+use crate::protocol::resp::{RESP, RESPConnection};
 use crate::redis::RedisServer;
-use crate::resp::{RESP, RESPConnection};
 
 type ReplicaResponse = (usize, usize); // offset, replica index
 #[derive(Clone, Debug)]
