@@ -44,9 +44,9 @@ impl ReplicaConnection {
                 Ok(
                     vec![
                         RESP::Array(vec![
-                            RESP::Bulk("REPLCONF".to_string()),
-                            RESP::Bulk("ACK".to_string()),
-                            RESP::Bulk(format!("{}", self.replicated_offset))])
+                            RESP::bulk("REPLCONF"),
+                            RESP::bulk("ACK"),
+                            RESP::bulk(&format!("{}", self.replicated_offset))])
                     ])
             }
             _ => {

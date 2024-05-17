@@ -1,10 +1,11 @@
-use crate::io::net::Binding;
-use crate::protocol::resp::RESPConnection;
-use crate::protocol::resp::RESP;
-
 use std::net::TcpStream;
 
 use anyhow::{bail, Result};
+
+use crate::io::net::Binding;
+use crate::protocol::resp::RESP;
+use crate::protocol::resp::RESP::Bulk;
+use crate::protocol::resp::RESPConnection;
 
 pub struct ReplicaClient {
     _binding: Binding,
@@ -23,7 +24,7 @@ impl ReplicaClient {
 
     pub fn ping_pong(&mut self) -> Result<()> {
         self.stream
-            .send_message(&RESP::Array(vec![RESP::Bulk("PING".to_string())]))?;
+            .send_message(&RESP::Array(vec![RESP::bulk("PING")]))?;
         if let (_, Some(RESP::String(str))) = self.stream.read_message()? {
             if str.to_uppercase() == "PONG" {
                 return Ok(());
@@ -33,11 +34,11 @@ impl ReplicaClient {
     }
 
     pub fn replconf(&mut self, params: &[&str]) -> Result<()> {
-        let mut command = vec![RESP::Bulk("REPLCONF".to_string())];
+        let mut command = vec![RESP::bulk("REPLCONF")];
 
         let mut bulk_params = params
             .into_iter()
-            .map(|param| RESP::Bulk(param.to_string()))
+            .map(|param| RESP::bulk(param))
             .collect::<Vec<RESP>>();
         command.append(&mut bulk_params);
 
@@ -51,9 +52,9 @@ impl ReplicaClient {
     }
     pub fn psync(&mut self, replication_id: &str, offset: i64) -> Result<Vec<u8>> {
         let command = vec![
-            RESP::Bulk("PSYNC".to_string()),
-            RESP::Bulk(replication_id.to_string()),
-            RESP::Bulk(format!("{}", offset)),
+            RESP::bulk("PSYNC"),
+            RESP::bulk(replication_id),
+            Bulk(format!("{}", offset)),
         ];
 
         self.stream.send_message(&RESP::Array(command))?;

@@ -6,8 +6,10 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
+use crate::args;
+use crate::args::named_option;
 use crate::io::net::Binding;
 use crate::protocol::command::Command;
 use crate::protocol::resp::RESP;
@@ -59,9 +61,9 @@ impl RedisServer {
         match cmd {
             Command::PING => Ok(vec![RESP::String("PONG".to_string())]),
             Command::ECHO => {
-                match params.first() {
-                    Some(param1) => Ok(vec![RESP::Bulk(param1.to_owned())]),
-                    None => Err(anyhow!("invalid echo  command {:?}", params)),
+                match &params[..] {
+                    [param1] => Ok(vec![RESP::bulk(param1)]),
+                    _ => bail!("invalid echo  command {:?}", params),
                 }
             }
             Command::SET => {
@@ -69,11 +71,11 @@ impl RedisServer {
                 match &params[..] {
                     // SET key value
                     [key, value, _set_options @ ..] => {
-                        let px_expiration = extract_option_u64(params, "PX")?.map(Duration::from_millis);
+                        let px_expiration = named_option::<u64>(params, "PX")?.map(Duration::from_millis);
                         self.store.write().unwrap().insert_value(&key, &value, px_expiration);
                         Ok(vec![RESP::String("OK".to_string())])
                     }
-                    _ => Err(anyhow!("invalid set command {:?}", params)),
+                    _ => bail!("invalid set command {:?}", params),
                 }
             }
             Command::GET => {
@@ -85,12 +87,11 @@ impl RedisServer {
                             // extract valid value from store
                             self.store.read().unwrap().get_value(key)
                                 // wrap it in bulk
-                                .map(RESP::Bulk)
                                 // Null if not found
-                                .unwrap_or(RESP::Null)
+                                .map_or(RESP::Null, RESP::Bulk)
                         ])
                     }
-                    _ => Err(anyhow!("invalid get command {:?}", params)),
+                    _ => bail!("invalid get command {:?}", params),
                 }
             }
             Command::TYPE => {
@@ -99,13 +100,11 @@ impl RedisServer {
                     [key] => {
                         Ok(vec![
                             RESP::String(
-                                self.store.read().unwrap().get_type(key)
-                                    .unwrap_or("none")
-                                    .to_string()
+                                self.store.read().unwrap().get_type(key).to_string()
                             )
                         ])
                     }
-                    _ => Err(anyhow!("invalid get command {:?}", params)),
+                    _ => bail!("invalid get command {:?}", params),
                 }
             }
             Command::XADD => {
@@ -119,11 +118,13 @@ impl RedisServer {
                         while let Some((key, value)) = iter.next().zip(iter.next()) {
                             stream_data.push((key.to_string(), value.to_string()));
                         }
-                        self.store.write().unwrap()
-                            .insert_stream(key, id, stream_data)
-                            .map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]), |new_id| Ok(vec![RESP::Bulk(new_id)]))
+                        Ok(vec![
+                            self.store.write().unwrap()
+                                .insert_stream(key, id, stream_data)
+                                .map_or_else(|err| RESP::Error(err.to_string()), |new_id| RESP::bulk(&new_id))
+                        ])
                     }
-                    _ => Err(anyhow!("invalid set command {:?}", params)),
+                    _ => bail!("invalid set command {:?}", params),
                 }
             }
             Command::XRANGE => {
@@ -144,24 +145,22 @@ impl RedisServer {
                             } else {
                                 to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?
                             };
-                        self.store.read().unwrap()
-                            .range_stream(key, from_id, to_id).map_or_else(|err| Ok(vec![RESP::Error(err.to_string())]),
-                                                                           |results| {
-                                                                               let results = results.iter().map(|(id, entries)| {
-                                                                                   RESP::Array(vec![
-                                                                                       RESP::Bulk(id.clone()),
-                                                                                       encode_stream_entries(entries),
-                                                                                   ])
-                                                                               }).collect();
-                                                                               Ok(vec![RESP::Array(results)])
-                                                                           })
+                        Ok(vec![
+                            self.store.read().unwrap()
+                                .range_stream(key, from_id, to_id)
+                                .map_or_else(|err| RESP::Error(err.to_string()),
+                                             |results| {
+                                                 let results = results.iter().map(encode_stream_entries).collect();
+                                                 RESP::Array(results)
+                                             })
+                        ])
                     }
-                    _ => Err(anyhow!("invalid xrange command {:?}", params)),
+                    _ => bail!("invalid xrange command {:?}", params),
                 }
             }
             Command::XREAD => {
-                let block_ms: Option<u64> = extract_option_u64(params, "BLOCK")?;
-                let streams = extract_option_list(params, "streams");
+                let block_ms: Option<u64> = named_option::<u64>(params, "BLOCK")?;
+                let streams = args::named_option_list(params, "streams");
                 // minimal implementation of https://redis.io/commands/xread/
                 match streams {
                     Some(sub_params) => {
@@ -213,10 +212,9 @@ impl RedisServer {
                 Ok(vec![
                     RESP::Array(
                         self.store.read().unwrap().keys()
-                            // TODO filter keys by pattern
                             // wrap it in bulk
                             .iter()
-                            .map(|v| RESP::Bulk(v.to_string()))
+                            .map(|v| RESP::bulk(v))
                             .collect()
                     )
                 ])
@@ -238,12 +236,13 @@ impl RedisServer {
                                 let info = pairs
                                     .map(|(k, v)| format!("{}:{}", k, v))
                                     .join("\r\n");
-                                Ok(vec![RESP::Bulk(info)])
+                                Ok(vec![RESP::bulk(&info)])
                             }
-                            _ => Err(anyhow!("unknown info command {:?}", sub_command)),
+                            // TODO implement other sub commands
+                            _ => bail!("unknown info command {:?}", sub_command),
                         }
                     }
-                    _ => Err(anyhow!("invalid get command {:?}", params)),
+                    _ => bail!("invalid info command {:?}", params),
                 }
             }
             Command::CONFIG => {
@@ -253,40 +252,35 @@ impl RedisServer {
                     [sub_command, key] => {
                         match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
                             ("GET", "dir") => {
-                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.db_dir.clone())])])
+                                Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_dir)])])
                             }
                             ("GET", "dbfilename") => {
-                                Ok(vec![RESP::Array(vec![RESP::Bulk(key.clone()), RESP::Bulk(self.db_filename.clone())])])
+                                Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_filename)])])
                             }
-                            _ => Err(anyhow!("unknown config command {:?}", sub_command)),
+                            _ => bail!("unknown config command {:?}", sub_command),
                         }
                     }
-                    _ => Err(anyhow!("invalid config command {:?}", params)),
+                    _ => bail!("invalid config command {:?}", params),
                 }
             }
 
-            _ => Err(anyhow!("Unknown command {:?}", cmd)),
+            _ => bail!("Unknown command {:?}", cmd),
         }
     }
 
+    /// read all stream values for the keys and minimal ids
     fn xread_values(&self, keys: &[String], key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<RESP> {
         let mut all_results = vec![];
-        let guard = self.store.read().unwrap();
+        let store = self.store.read().unwrap();
 
         // results should be in the same order as the in the command
         for key in keys {
-            let key = key.to_string();
-            let from_id = key_id_pairs.get(&key).unwrap();
+            let from_id = key_id_pairs.get(key).unwrap();
 
-            let key_results = guard
-                .read_stream(&key, from_id.clone(), StreamEntryId::MAX)?;
+            let key_results = store
+                .read_stream(key, from_id.clone(), StreamEntryId::MAX)?;
 
-            let results: Vec<RESP> = key_results.iter().map(|(id, entries)| {
-                RESP::Array(vec![
-                    RESP::Bulk(id.clone()),
-                    encode_stream_entries(entries),
-                ])
-            }).collect();
+            let results: Vec<RESP> = key_results.iter().map(encode_stream_entries).collect();
 
             if results.is_empty() {
                 continue;
@@ -294,7 +288,7 @@ impl RedisServer {
 
             all_results.push(
                 RESP::Array(vec![
-                    RESP::Bulk(key.to_string()),
+                    RESP::bulk(key),
                     RESP::Array(results),
                 ])
             )
@@ -355,32 +349,14 @@ impl RedisServer {
     }
 }
 
-fn encode_stream_entries(entries: &Vec<(String, String)>) -> RESP {
+fn encode_stream_entries(entries: &(String, &Vec<(String, String)>)) -> RESP {
     let mut array = vec![];
-    for (k, v) in entries {
-        array.push(RESP::Bulk(k.clone()));
-        array.push(RESP::Bulk(v.clone()));
+    for (k, v) in entries.1 {
+        array.push(RESP::bulk(k));
+        array.push(RESP::bulk(v));
     }
-    RESP::Array(array)
-}
-
-
-fn extract_option_u64(params: &[String], option_name: &str) -> Result<Option<u64>> {
-    let value = extract_option_string(params, option_name);
-    let value = value.map(|v| v.parse::<u64>()).transpose()?;
-    Ok(value)
-}
-
-fn extract_option_string(params: &[String], option_name: &str) -> Option<String> {
-    let option_name = option_name.to_uppercase();
-    params.iter()
-        .position(|e| e.to_string().to_uppercase() == option_name)
-        .map(|i| params[i + 1].clone())
-}
-
-fn extract_option_list<'a>(params: &'a [String], option_name: &str) -> Option<&'a [String]> {
-    let option_name = option_name.to_uppercase();
-    params.iter()
-        .position(|e| e.to_string().to_uppercase() == option_name)
-        .map(|i| &params[i + 1..])
+    RESP::Array(vec![
+        RESP::bulk(&entries.0),
+        RESP::Array(array),
+    ])
 }

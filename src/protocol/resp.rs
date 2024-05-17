@@ -19,6 +19,12 @@ pub enum RESP {
     File(Vec<u8>),
 }
 
+impl RESP {
+    pub fn bulk(string: &str) -> Self {
+        RESP::Bulk(string.to_string())
+    }
+}
+
 impl Display for RESP {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -62,7 +68,7 @@ impl RESPConnection {
     }
 
     pub fn _send_command(&mut self, command_line: &str) -> Result<usize> {
-        let command_message = RESP::Array(command_line.split(" ").map(|token| RESP::Bulk(token.to_string())).collect::<Vec<RESP>>());
+        let command_message = RESP::Array(command_line.split(" ").map(RESP::bulk).collect::<Vec<RESP>>());
         self.send_message(&command_message)
     }
 
@@ -201,7 +207,7 @@ fn decode_message(reader: &mut BufReader<TcpStream>) -> Result<(usize, Option<RE
                                 full_len += buf.capacity();
                                 buf.truncate(len as usize); // drop the 2 bytes at the end since they are only delimiters
                                 let bulk_string = String::from_utf8(buf)?;
-                                Ok(Some(RESP::Bulk(bulk_string)))
+                                Ok(Some(RESP::bulk(&bulk_string)))
                             } else {
                                 Ok(None)
                             }

@@ -108,15 +108,14 @@ impl StreamEntryId {
 }
 
 #[derive(Clone, Debug)]
-pub struct StreamEntry(StreamEntryId, Vec<(String, String)>);
+struct StreamEntry(StreamEntryId, Vec<(String, String)>);
 
 #[derive(Clone, Debug)]
 pub struct StreamEvent(pub(crate) String, pub(crate) StreamEntryId);
 
 #[derive(Clone, Debug)]
 pub struct StreamListener(Arc<(Mutex<Option<StreamEvent>>, Condvar)>);
-
-impl StreamListener {}
+// TODO the stream listeners should deregister with the store on destruction
 
 enum Value {
     String(String),
@@ -130,14 +129,14 @@ struct StoredValue {
 }
 
 impl StoredValue {
-    pub fn from_string(key: &str, value: &str, valid_until: Option<SystemTime>) -> Self {
+    fn from_string(key: &str, value: &str, valid_until: Option<SystemTime>) -> Self {
         StoredValue {
             key: key.to_string(),
             value: Value::String(value.to_string()),
             valid_until,
         }
     }
-    pub fn empty_stream(key: &str) -> Self {
+    fn empty_stream(key: &str) -> Self {
         StoredValue {
             key: key.to_string(),
             value: Value::Stream(Vec::new(), Vec::new()),
@@ -145,7 +144,7 @@ impl StoredValue {
         }
     }
 
-    pub fn value(&self) -> Option<String> {
+    fn value(&self) -> Option<String> {
         if let Some(valid_until) = self.valid_until {
             if valid_until < SystemTime::now() {
                 return None;
@@ -157,7 +156,7 @@ impl StoredValue {
         }
     }
 
-    pub fn add_entry(
+    fn add_entry(
         &mut self,
         id_pattern: String,
         entry: Vec<(String, String)>,
@@ -213,7 +212,7 @@ impl StoredValue {
         }
     }
 
-    pub fn range(
+    fn range(
         &self,
         from_id: &StreamEntryId,
         to_id: &StreamEntryId,
@@ -236,7 +235,7 @@ impl StoredValue {
         }
     }
 
-    pub fn last_id(&self) -> anyhow::Result<StreamEntryId> {
+    fn last_id(&self) -> anyhow::Result<StreamEntryId> {
         match &self.value {
             Value::Stream(entries, _) => {
                 Ok(entries.last().map_or(StreamEntryId::MIN, |e| e.0.clone()))
@@ -245,7 +244,7 @@ impl StoredValue {
         }
     }
 
-    pub fn value_type(&self) -> &str {
+    fn value_type(&self) -> &str {
         match &self.value {
             Value::String(_) => {
                 if self.value().is_none() {
@@ -270,8 +269,8 @@ impl KVStore {
         self.0.get(key).and_then(|v| v.value())
     }
 
-    pub fn get_type(&self, key: &str) -> Option<&str> {
-        self.0.get(key).map(|v| v.value_type())
+    pub fn get_type(&self, key: &str) -> &str {
+        self.0.get(key).map_or("none", |v| v.value_type())
     }
 
     pub fn keys(&self) -> Vec<&str> {
@@ -373,7 +372,7 @@ impl KVStore {
 
         let version = header["REDIS".len()..header.len()].to_string();
         println!("rdb version: {}", version);
-        let mut timestamp = None;
+        let mut valid_until_ms = None;
 
         while let Ok(op) = rdb::read_byte(&mut reader) {
             match op {
@@ -404,11 +403,11 @@ impl KVStore {
                 }
                 0xFD => {
                     // The following expire value is specified in seconds. The following 4 bytes represent the Unix timestamp as an unsigned integer.
-                    timestamp = Some((rdb::read_u32(&mut reader)? as u64) * 1000);
+                    valid_until_ms = Some((rdb::read_u32(&mut reader)? as u64) * 1000);
                 }
                 0xFC => {
                     // The following expire value is specified in milliseconds. The following 8 bytes represent the Unix timestamp as an unsigned long.
-                    timestamp = Some(rdb::read_u64(&mut reader)?);
+                    valid_until_ms = Some(rdb::read_u64(&mut reader)?);
                 }
                 0xFF => {
                     // rdb load finished
@@ -418,18 +417,19 @@ impl KVStore {
                 0..=14 => {
                     let key = rdb::read_string(&mut reader)?;
                     let value = rdb::read_string(&mut reader)?;
+                    let valid_until = valid_until_ms.map(|epoch_ms| {
+                        SystemTime::UNIX_EPOCH + Duration::from_millis(epoch_ms)
+                    });
                     self.0.insert(
                         key.clone(),
                         StoredValue::from_string(
                             &key,
                             &value,
-                            timestamp.map(|epoc_ms| {
-                                SystemTime::UNIX_EPOCH + Duration::from_millis(epoc_ms)
-                            }),
+                            valid_until,
                         ),
                     );
                     // reset
-                    timestamp = None;
+                    valid_until_ms = None;
                 }
 
                 _ => {

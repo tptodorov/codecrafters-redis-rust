@@ -4,7 +4,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use crate::connection::ClientConnectionHandler;
 use crate::io::net::{Binding, Port};
@@ -101,10 +101,10 @@ impl MasterConnection {
                                 Ok(vec![RESP::Int(ack_replicas as i64)])
                             }
                         } else {
-                            Err(anyhow!("invalid wait command {:?}", params))
+                            bail!("invalid wait command {:?}", params)
                         }
                     }
-                    _ => Err(anyhow!("invalid wait command {:?}", params)),
+                    _ => bail!("invalid wait command {:?}", params),
                 }
             }
             Command::PSYNC => {
@@ -121,10 +121,10 @@ impl MasterConnection {
                             sync_response.append(&mut current_log);
                             Ok(sync_response)
                         } else {
-                            Err(anyhow!("invalid psync command {:?}", params))
+                            bail!("invalid psync command {:?}", params)
                         }
                     }
-                    _ => Err(anyhow!("invalid psync command {:?}", params)),
+                    _ => bail!("invalid psync command {:?}", params),
                 }
             }
 
@@ -170,7 +170,7 @@ impl MasterConnection {
 
         let master_offset = self.master.redis.log_store.read().unwrap().log_bytes;
 
-        let getack = RESP::Array(vec![RESP::Bulk("REPLCONF".to_string()), RESP::Bulk("GETACK".to_string()), RESP::Bulk("*".to_string())]);
+        let getack = RESP::Array(vec![RESP::bulk("REPLCONF"), RESP::bulk("GETACK"), RESP::bulk("*")]);
 
         let mut replicas = self.master.replicas.write().unwrap();
 
