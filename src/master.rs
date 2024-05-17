@@ -60,7 +60,7 @@ impl MasterConnection {
     }
 
 
-    fn handle_command(&mut self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
+    fn handle_client_command(&mut self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
         match cmd {
             Command::REPLCONF => {
                 // minimal implementation of https://redis.io/docs/latest/commands/replconf/
@@ -133,7 +133,7 @@ impl MasterConnection {
     }
 
 
-    fn send_replicas(&self, message_bytes: usize, message: RESP) -> Result<()> {
+    fn send_replicas(&self, message_bytes: usize, message: &RESP) -> Result<()> {
         assert!(matches!(&message, RESP::Array(_)), "not an array: {}", message);
 
         // append to the command log
@@ -277,26 +277,17 @@ impl MasterConnection {
 }
 
 impl ClientConnectionHandler for MasterConnection {
-    fn handle_message(&mut self, connection: &mut RESPConnection) -> Result<()> {
-        let current = thread::current();
-        let thread_name = current.name().unwrap();
-
-        let (message_bytes, message) = connection.read_message()?;
-        let message = message.expect("message not read");
-        println!("@{}: received message: {}", thread_name, message);
-        let (command, params) = Command::parse_command(&message)?;
-
-        let responses = self.handle_command(&command, &params)?;
+    fn handle_message(&mut self, message_bytes: usize, message: &RESP, command: &Command, params: &[String], connection: &mut RESPConnection) -> anyhow::Result<()> {
+        let responses = self.handle_client_command(&command, &params)?;
 
         if command.is_mutating() {
             // replicate mutations only if you are a master
             self.send_replicas(message_bytes, message)?;
         }
 
-        println!("@{}: replied {} with: {:?}", thread_name, command, &responses);
         connection.send_messages(&responses.iter().map(|r| r).collect::<Vec<&RESP>>())?;
 
-        if command == Command::PSYNC {
+        if *command == Command::PSYNC {
             self.master_replica_connection(connection)?;
         }
 

@@ -93,13 +93,7 @@ impl ReplicaConnection {
 }
 
 impl ClientConnectionHandler for ReplicaConnection {
-    fn handle_message(&mut self, connection: &mut RESPConnection) -> Result<()> {
-        let (_, message) = connection.read_message()?;
-        let message = message.expect("message not read");
-
-        println!("message: {:?}", message);
-        let (command, params) = Command::parse_command(&message)?;
-
+    fn handle_message(&mut self, _message_bytes: usize, _message: &RESP, command: &Command, params: &[String], connection: &mut RESPConnection) -> anyhow::Result<()> {
         let responses = self.handle_client_command(&command, &params)?;
 
         println!("handled {:?} with: {:?}", command, responses);
