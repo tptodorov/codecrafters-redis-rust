@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 use crate::args;
 use crate::args::named_option;
 use crate::io::net::Binding;
-use crate::protocol::command::Command;
+use crate::protocol::command::{Command, CommandRequest};
 use crate::protocol::resp::RESP;
 use crate::store::{KVStore, StreamEntryId, StreamEvent};
 
@@ -57,108 +57,79 @@ impl RedisServer {
         Ok(server)
     }
 
-    pub(crate) fn handle_command(&self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
-        match cmd {
-            Command::PING => Ok(vec![RESP::String("PONG".to_string())]),
-            Command::ECHO => {
-                match &params[..] {
-                    [param1] => Ok(vec![RESP::bulk(param1)]),
-                    _ => bail!("invalid echo  command {:?}", params),
-                }
+    pub(crate) fn handle_command(&self, cmd: &CommandRequest) -> Result<Vec<RESP>> {
+        match cmd.as_ref() {
+            (Command::PING, []) => Ok(vec![RESP::String("PONG".to_string())]),
+            (Command::ECHO, [param1]) => {
+                Ok(vec![RESP::bulk(param1)])
             }
-            Command::SET => {
+            (Command::SET, [key, value, options @ ..]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/set/
-                match &params[..] {
-                    // SET key value
-                    [key, value, _set_options @ ..] => {
-                        let px_expiration = named_option::<u64>(params, "PX")?.map(Duration::from_millis);
-                        self.store.write().unwrap().insert_value(&key, &value, px_expiration);
-                        Ok(vec![RESP::String("OK".to_string())])
-                    }
-                    _ => bail!("invalid set command {:?}", params),
-                }
+                let px_expiration = named_option::<u64>(options, "PX")?.map(Duration::from_millis);
+                self.store.write().unwrap().insert_value(&key, &value, px_expiration);
+                Ok(vec![RESP::String("OK".to_string())])
             }
-            Command::GET => {
+            (Command::GET, [key]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/get/
                 // GET key
-                match params {
-                    [key] => {
-                        Ok(vec![
-                            // extract valid value from store
-                            self.store.read().unwrap().get_value(key)
-                                // wrap it in bulk
-                                // Null if not found
-                                .map_or(RESP::Null, RESP::Bulk)
-                        ])
-                    }
-                    _ => bail!("invalid get command {:?}", params),
-                }
+                Ok(vec![
+                    // extract valid value from store
+                    self.store.read().unwrap().get_value(key)
+                        // wrap it in bulk
+                        // Null if not found
+                        .map_or(RESP::Null, RESP::Bulk)
+                ])
             }
-            Command::TYPE => {
+            (Command::TYPE, [key]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/type/
-                match params {
-                    [key] => {
-                        Ok(vec![
-                            RESP::String(
-                                self.store.read().unwrap().get_type(key).to_string()
-                            )
-                        ])
-                    }
-                    _ => bail!("invalid get command {:?}", params),
-                }
+                Ok(vec![
+                    RESP::String(
+                        self.store.read().unwrap().get_type(key).to_string()
+                    )
+                ])
             }
-            Command::XADD => {
+            (Command::XADD, [key, id, key_value_pairs @ ..]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/xadd/
                 // XADD key id field value [field value ...]
-                match params {
-                    // SET key value
-                    [key, id, key_value_pairs @ ..] => {
-                        let mut stream_data = vec![];
-                        let mut iter = key_value_pairs.iter();
-                        while let Some((key, value)) = iter.next().zip(iter.next()) {
-                            stream_data.push((key.to_string(), value.to_string()));
-                        }
-                        Ok(vec![
-                            self.store.write().unwrap()
-                                .insert_stream(key, id, stream_data)
-                                .map_or_else(|err| RESP::Error(err.to_string()), |new_id| RESP::bulk(&new_id))
-                        ])
-                    }
-                    _ => bail!("invalid set command {:?}", params),
+
+                let mut stream_data = vec![];
+                let mut iter = key_value_pairs.iter();
+                while let Some((key, value)) = iter.next().zip(iter.next()) {
+                    stream_data.push((key.to_string(), value.to_string()));
                 }
+                Ok(vec![
+                    self.store.write().unwrap()
+                        .insert_stream(key, id, stream_data)
+                        .map_or_else(|err| RESP::Error(err.to_string()), |new_id| RESP::bulk(&new_id))
+                ])
             }
-            Command::XRANGE => {
+            (Command::XRANGE, [key, from_id, to_id]) => {
                 // minimal implementation of https://redis.io/commands/xrange/
                 // XRANGE key id-from id-to
-                match params {
-                    // SET key value
-                    [key, from_id, to_id] => {
-                        let from_id =
-                            if from_id == "-" {
-                                StreamEntryId::MIN
-                            } else {
-                                from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?
-                            };
-                        let to_id =
-                            if to_id == "+" {
-                                StreamEntryId::MAX
-                            } else {
-                                to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?
-                            };
-                        Ok(vec![
-                            self.store.read().unwrap()
-                                .range_stream(key, from_id, to_id)
-                                .map_or_else(|err| RESP::Error(err.to_string()),
-                                             |results| {
-                                                 let results = results.iter().map(encode_stream_entries).collect();
-                                                 RESP::Array(results)
-                                             })
-                        ])
-                    }
-                    _ => bail!("invalid xrange command {:?}", params),
-                }
+
+                let from_id =
+                    if from_id == "-" {
+                        StreamEntryId::MIN
+                    } else {
+                        from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?
+                    };
+                let to_id =
+                    if to_id == "+" {
+                        StreamEntryId::MAX
+                    } else {
+                        to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?
+                    };
+                Ok(vec![
+                    self.store.read().unwrap()
+                        .range_stream(key, from_id, to_id)
+                        .map_or_else(|err| RESP::Error(err.to_string()),
+                                     |results| {
+                                         let results = results.iter().map(encode_stream_entries).collect();
+                                         RESP::Array(results)
+                                     })
+                ])
             }
-            Command::XREAD => {
+            (Command::XREAD, params) => {
                 let block_ms: Option<u64> = named_option::<u64>(params, "BLOCK")?;
                 let streams = args::named_option_list(params, "streams");
                 // minimal implementation of https://redis.io/commands/xread/
@@ -207,7 +178,7 @@ impl RedisServer {
                 }
             }
 
-            Command::KEYS => {
+            (Command::KEYS, _) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/keys/
                 Ok(vec![
                     RESP::Array(
@@ -220,51 +191,43 @@ impl RedisServer {
                 ])
             }
 
-            Command::INFO => {
+            (Command::INFO, [sub_command]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/info/
                 // INFO replication
-                match params {
-                    [sub_command] => {
-                        match sub_command.to_ascii_uppercase().as_str() {
-                            "REPLICATION" => {
-                                let role = if !self.is_master { "slave" } else { "master" };
-                                let pairs = [
-                                    ("role", role),
-                                    ("master_replid", &self.master_replid),
-                                    ("master_repl_offset", &format!("{}", self.log_store.read().unwrap().log_bytes))
-                                ];
-                                let info = pairs
-                                    .map(|(k, v)| format!("{}:{}", k, v))
-                                    .join("\r\n");
-                                Ok(vec![RESP::bulk(&info)])
-                            }
-                            // TODO implement other sub commands
-                            _ => bail!("unknown info command {:?}", sub_command),
-                        }
+
+                match sub_command.to_ascii_uppercase().as_str() {
+                    "REPLICATION" => {
+                        let role = if !self.is_master { "slave" } else { "master" };
+                        let pairs = [
+                            ("role", role),
+                            ("master_replid", &self.master_replid),
+                            ("master_repl_offset", &format!("{}", self.log_store.read().unwrap().log_bytes))
+                        ];
+                        let info = pairs
+                            .map(|(k, v)| format!("{}:{}", k, v))
+                            .join("\r\n");
+                        Ok(vec![RESP::bulk(&info)])
                     }
-                    _ => bail!("invalid info command {:?}", params),
+                    // TODO implement other sub commands
+                    _ => bail!("unknown info command {:?}", sub_command),
                 }
             }
-            Command::CONFIG => {
+            (Command::CONFIG, [sub_command, key]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/info/
                 // INFO replication
-                match params {
-                    [sub_command, key] => {
-                        match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
-                            ("GET", "dir") => {
-                                Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_dir)])])
-                            }
-                            ("GET", "dbfilename") => {
-                                Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_filename)])])
-                            }
-                            _ => bail!("unknown config command {:?}", sub_command),
-                        }
+
+                match (sub_command.to_uppercase().as_str(), key.to_lowercase().as_str()) {
+                    ("GET", "dir") => {
+                        Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_dir)])])
                     }
-                    _ => bail!("invalid config command {:?}", params),
+                    ("GET", "dbfilename") => {
+                        Ok(vec![RESP::Array(vec![RESP::bulk(key), RESP::bulk(&self.db_filename)])])
+                    }
+                    _ => bail!("unknown config command {:?}", sub_command),
                 }
             }
 
-            _ => bail!("Unknown command {:?}", cmd),
+            _ => bail!("Unknown or invalid command {:?}", cmd),
         }
     }
 

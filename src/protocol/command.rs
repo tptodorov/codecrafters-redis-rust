@@ -5,7 +5,7 @@ use anyhow::bail;
 
 use crate::protocol::resp::RESP;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Command {
     PING,
     ECHO,
@@ -29,28 +29,9 @@ pub enum Command {
 impl Command {
     /** command mutates the local storage */
     pub fn is_mutating(&self) -> bool {
-        matches!(self, Command::SET  )
-    }
-
-    pub(crate) fn parse_command(message: &RESP) -> anyhow::Result<(Command, Vec<String>)> {
-        match message {
-            RESP::Array(array) =>
-                if array.iter().all(|x| matches!(x, RESP::Bulk(_))) {
-                    let strings = array.iter().map(|r| r.to_string()).collect::<Vec<String>>();
-                    match &strings[..] {
-                        [command, params @ .. ] => {
-                            let cmd = command.parse::<Command>()?;
-                            return Ok((cmd, params.to_vec()));
-                        }
-                        _ => {}
-                    }
-                }
-            _ => {}
-        }
-        bail!("message is not a valid command: {}", message)
+        matches!(self, Command::SET | Command::XADD)
     }
 }
-
 
 impl FromStr for Command {
     type Err = anyhow::Error;
@@ -94,5 +75,39 @@ impl Display for Command {
             Command::XRANGE => write!(f, "XRANGE"),
             Command::XREAD => write!(f, "XREAD"),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandRequest(pub Command, pub Vec<String>);
+
+impl CommandRequest {
+    pub fn as_ref(&self) -> (&Command, &[String]) {
+        (&self.0, self.1.as_slice())
+    }
+}
+
+
+impl TryFrom<RESP> for CommandRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: RESP) -> Result<Self, Self::Error> {
+        match &value {
+            RESP::Array(ref array) => {
+                if array.iter().all(|x| matches!(x, RESP::Bulk(_))) {
+                    let strings = array.iter().map(|r| r.to_string()).collect::<Vec<String>>();
+                    match &strings[..] {
+                        [command, params @ ..] => {
+                            let cmd = command.parse::<Command>()?;
+                            let vec = params.to_owned();
+                            return Ok(Self(cmd, vec));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        bail!("message is not a valid command: {}", value)
     }
 }

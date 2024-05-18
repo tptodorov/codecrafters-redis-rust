@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 
 use crate::connection::ClientConnectionHandler;
 use crate::io::net::{Binding, Port};
-use crate::protocol::command::Command;
+use crate::protocol::command::{Command, CommandRequest};
 use crate::protocol::rdb::empty_rdb;
 use crate::protocol::resp::{RESP, RESPConnection};
 use crate::redis::RedisServer;
@@ -60,21 +60,18 @@ impl MasterConnection {
     }
 
 
-    fn handle_client_command(&mut self, cmd: &Command, params: &[String]) -> Result<Vec<RESP>> {
-        match cmd {
-            Command::REPLCONF => {
+    fn handle_client_command(&mut self, cmd: &CommandRequest) -> Result<Vec<RESP>> {
+        match cmd.as_ref() {
+            (Command::REPLCONF, [sub_command, param1]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/replconf/
                 // REPLCONF ...
-                println!("master accepted OK replconf: {:?}", params);
-                if let [sub_command, param1] = params {
-                    match sub_command.to_uppercase().as_str() {
-                        "LISTENING-PORT" => {
-                            let replica_port = param1.parse::<Port>()?;
-                            self.replica_binding = Some(Binding(self.remote_host.ip().to_string(), replica_port));
-                        }
-                        _ => {
-                            // ignore other replconf commands
-                        }
+                match sub_command.to_uppercase().as_str() {
+                    "LISTENING-PORT" => {
+                        let replica_port = param1.parse::<Port>()?;
+                        self.replica_binding = Some(Binding(self.remote_host.ip().to_string(), replica_port));
+                    }
+                    _ => {
+                        // ignore other replconf commands
                     }
                 }
                 Ok(
@@ -83,52 +80,45 @@ impl MasterConnection {
                     ])
             }
 
-            Command::WAIT => {
+            (Command::WAIT, [required_replicas, timeout_ms]) => {
                 // minimal implementation of https://redis.io/docs/latest/commands/wait/
                 // WAIT ...
-                match params {
-                    [required_replicas, timeout_ms] => {
-                        let required_replicas = required_replicas.parse::<i64>().unwrap_or(-1);
-                        let timeout_ms = timeout_ms.parse::<i64>().unwrap_or(-1);
-                        if required_replicas >= 0 && timeout_ms >= 0 {
-                            if self.master.redis.log_store.read().unwrap().log.is_empty() {
-                                // for empty log we don't need to check replicas
-                                let active_replicas = self.master.replicas.read().unwrap().len();
-                                Ok(vec![RESP::Int(active_replicas as i64)])
-                            } else {
-                                // ack from all replicas
-                                let ack_replicas = self.request_ack(required_replicas.abs() as u32, Duration::from_millis(timeout_ms.abs() as u64))?;
-                                Ok(vec![RESP::Int(ack_replicas as i64)])
-                            }
-                        } else {
-                            bail!("invalid wait command {:?}", params)
-                        }
+
+                let required_replicas = required_replicas.parse::<i64>().unwrap_or(-1);
+                let timeout_ms = timeout_ms.parse::<i64>().unwrap_or(-1);
+                if required_replicas >= 0 && timeout_ms >= 0 {
+                    if self.master.redis.log_store.read().unwrap().log.is_empty() {
+                        // for empty log we don't need to check replicas
+                        let active_replicas = self.master.replicas.read().unwrap().len();
+                        Ok(vec![RESP::Int(active_replicas as i64)])
+                    } else {
+                        // ack from all replicas
+                        let ack_replicas = self.request_ack(required_replicas.abs() as u32, Duration::from_millis(timeout_ms.abs() as u64))?;
+                        Ok(vec![RESP::Int(ack_replicas as i64)])
                     }
-                    _ => bail!("invalid wait command {:?}", params),
-                }
-            }
-            Command::PSYNC => {
-                // minimal implementation of https://redis.io/docs/latest/commands/psync/
-                // PSYNC replication-id offset
-                match params {
-                    [repl_id, offset] => {
-                        // replica does not know where to start
-                        if (repl_id == "?" && offset == "-1") || repl_id == &self.master.redis.master_replid {
-                            // this makes the current connection a replication connection
-                            let mut sync_response = vec![RESP::String(format!("FULLRESYNC {} 0", self.master.redis.master_replid)), RESP::File(empty_rdb())];
-                            // add current log for replication on top of the rds image
-                            let mut current_log = self.master.redis.log_store.read().unwrap().log.clone();
-                            sync_response.append(&mut current_log);
-                            Ok(sync_response)
-                        } else {
-                            bail!("invalid psync command {:?}", params)
-                        }
-                    }
-                    _ => bail!("invalid psync command {:?}", params),
+                } else {
+                    bail!("invalid wait command {:?}", cmd)
                 }
             }
 
-            _ => self.master.redis.handle_command(cmd, params),
+            (Command::PSYNC, [repl_id, offset]) => {
+                // minimal implementation of https://redis.io/docs/latest/commands/psync/
+                // PSYNC replication-id offset
+
+                // replica does not know where to start
+                if (repl_id == "?" && offset == "-1") || repl_id == &self.master.redis.master_replid {
+                    // this makes the current connection a replication connection
+                    let mut sync_response = vec![RESP::String(format!("FULLRESYNC {} 0", self.master.redis.master_replid)), RESP::File(empty_rdb())];
+                    // add current log for replication on top of the rds image
+                    let mut current_log = self.master.redis.log_store.read().unwrap().log.clone();
+                    sync_response.append(&mut current_log);
+                    Ok(sync_response)
+                } else {
+                    bail!("invalid psync command {:?}", cmd)
+                }
+            }
+
+            _ => self.master.redis.handle_command(cmd),
         }
     }
 
@@ -244,18 +234,17 @@ impl MasterConnection {
                 }
                 ReplicaMessage::Command(message, tx, replica_index, timeout) => {
                     if let Err(err) = connection.send_message(&message) {
-                        println!("@{}: returned error: {} while requesting: {:?}", thread_name, err, message);
+                        println!("@{}: returned error: {} while requesting: {:?}", thread_name, err, &message);
                         if err.to_string().contains("Broken pipe") {
                             bail!("client connection dropped");
                         }
                     }
-                    if let Ok((Command::REPLCONF, _)) = Command::parse_command(&message) {
-                        println!("@{}: waiting ACK from replica {}", thread_name, message);
+                    if let Ok(CommandRequest(Command::REPLCONF, _)) = message.try_into() {
                         // expect ack response from replica
                         let current_timeout = connection.read_timeout()?;
                         connection.set_read_timeout(Some(timeout))?;
                         if let Ok((_, Some(replica_ack))) = connection.read_message() {
-                            if let Ok((Command::REPLCONF, ack_params)) = Command::parse_command(&replica_ack) {
+                            if let Ok(CommandRequest(Command::REPLCONF, ack_params)) = replica_ack.try_into() {
                                 if let Some(offset) = ack_params.last() {
                                     let offset = offset.parse::<usize>().unwrap();
                                     println!("@{}: replica ACKED with offset {} ", thread_name, offset);
@@ -265,7 +254,7 @@ impl MasterConnection {
                                 }
                             }
                         } else {
-                            println!("@{}: gave up waiting ACK from replica {}", thread_name, message);
+                            println!("@{}: gave up waiting ACK from replica", thread_name);
                         }
                         connection.set_read_timeout(current_timeout)?;
                     }
@@ -277,17 +266,23 @@ impl MasterConnection {
 }
 
 impl ClientConnectionHandler for MasterConnection {
-    fn handle_message(&mut self, message_bytes: usize, message: &RESP, command: &Command, params: &[String], connection: &mut RESPConnection) -> anyhow::Result<()> {
-        let responses = self.handle_client_command(&command, &params)?;
+    fn handle_request(
+        &mut self,
+        message_bytes: usize,
+        message: RESP,
+        command: CommandRequest,
+        connection: &mut RESPConnection,
+    ) -> Result<()> {
+        let responses = self.handle_client_command(&command)?;
 
-        if command.is_mutating() {
+        if command.0.is_mutating() {
             // replicate mutations only if you are a master
-            self.send_replicas(message_bytes, message)?;
+            self.send_replicas(message_bytes, &message)?;
         }
 
         connection.send_messages(&responses.iter().map(|r| r).collect::<Vec<&RESP>>())?;
 
-        if *command == Command::PSYNC {
+        if command.0 == Command::PSYNC {
             self.master_replica_connection(connection)?;
         }
 
