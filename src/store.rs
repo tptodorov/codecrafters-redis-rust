@@ -7,7 +7,7 @@ use std::io::BufReader;
 use std::io::Read;
 use std::ops::Deref;
 use std::str::FromStr;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex, Weak};
 use std::time::SystemTime;
 
 use anyhow::bail;
@@ -114,7 +114,7 @@ struct StreamEntry(StreamEntryId, Vec<(String, String)>);
 pub struct StreamEvent(pub(crate) String, pub(crate) StreamEntryId);
 
 #[derive(Clone, Debug)]
-pub struct StreamListener(Arc<(Mutex<Option<StreamEvent>>, Condvar)>);
+struct StreamListener(Weak<(Mutex<Option<StreamEvent>>, Condvar)>);
 // TODO the stream listeners should deregister with the store on destruction
 
 enum Value {
@@ -186,11 +186,19 @@ impl StoredValue {
 
                 let event = StreamEvent(self.key.clone(), new_id);
 
-                for l in listeners {
-                    let (lock, cvar) = l.0.deref();
-                    lock.lock().unwrap().replace(event.clone());
-                    cvar.notify_one();
-                }
+                // notify listeners while removing the dropped ones
+                listeners.retain_mut(|l| {
+                    if let Some(arc) = l.0.upgrade() {
+                        let (lock, cvar) = arc.deref();
+                        lock.lock().unwrap().replace(event.clone());
+                        cvar.notify_one();
+                        true
+                    } else {
+                        false
+                    }
+                });
+
+                // listeners.retain_mut(|l| l.0.upgrade().is_some());
 
                 Ok(new_ids)
             }
@@ -200,7 +208,7 @@ impl StoredValue {
 
     fn add_listener(
         &mut self,
-        listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>,
+        listener: Weak<(Mutex<Option<StreamEvent>>, Condvar)>,
     ) -> anyhow::Result<StreamListener> {
         match &mut self.value {
             Value::Stream(_, listeners) => {
@@ -347,15 +355,15 @@ impl KVStore {
     pub fn add_listener(
         &mut self,
         keys: &Vec<&String>,
-        listener: Arc<(Mutex<Option<StreamEvent>>, Condvar)>,
-    ) -> anyhow::Result<Vec<StreamListener>> {
+        listener: Weak<(Mutex<Option<StreamEvent>>, Condvar)>,
+    ) -> anyhow::Result<()> {
         let mut listeners = vec![];
         for &key in keys {
             if let Some(value) = self.0.get_mut(key) {
                 listeners.push(value.add_listener(listener.clone())?);
             }
         }
-        Ok(listeners)
+        Ok(())
     }
 
     /**

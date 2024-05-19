@@ -279,7 +279,8 @@ impl RedisServer {
 
         let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
 
-        let _key_results = self.store.write().unwrap().add_listener(&keys, this_listener.clone());
+        // listeners will be removed passively
+        self.store.write().unwrap().add_listener(&keys, Arc::downgrade(&this_listener))?;
 
         let (lock, cvar) = this_listener.deref();
         let mut event_guard = lock.lock().unwrap();
