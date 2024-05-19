@@ -20,6 +20,7 @@ mod redis;
 mod replica;
 mod store;
 mod args;
+mod stream;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();

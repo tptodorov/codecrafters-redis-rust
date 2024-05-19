@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+/// Byte counting writer
 pub struct CountingWriter<W: Write> {
     inner: W,
     count: usize,

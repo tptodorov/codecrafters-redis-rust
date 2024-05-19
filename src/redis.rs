@@ -13,7 +13,8 @@ use crate::args::named_option;
 use crate::io::net::Binding;
 use crate::protocol::command::{Command, CommandRequest};
 use crate::protocol::resp::RESP;
-use crate::store::{KVStore, StreamEntryId, StreamEvent};
+use crate::store::Store;
+use crate::stream::{StreamEvent, StreamRecordId};
 
 #[derive(Default)]
 pub struct LogStore {
@@ -25,7 +26,7 @@ pub struct LogStore {
 #[derive(Clone)]
 pub struct RedisServer {
     pub(crate) binding: Binding,
-    store: Arc<RwLock<KVStore>>,
+    store: Arc<RwLock<Store>>,
     pub(crate) log_store: Arc<RwLock<LogStore>>,
     pub(crate) master_replid: String,
     pub is_master: bool,
@@ -44,7 +45,7 @@ impl RedisServer {
 
         let server = RedisServer {
             binding,
-            store: Arc::new(RwLock::new(KVStore::new())),
+            store: Arc::new(RwLock::new(Store::new())),
             master_replid,
             is_master,
             log_store: Arc::new(RwLock::new(LogStore::default())),
@@ -109,15 +110,15 @@ impl RedisServer {
 
                 let from_id =
                     if from_id == "-" {
-                        StreamEntryId::MIN
+                        StreamRecordId::MIN
                     } else {
-                        from_id.parse::<StreamEntryId>().or(from_id.parse::<u64>().map(|v| StreamEntryId::new(v, 0)))?
+                        from_id.parse::<StreamRecordId>().or(from_id.parse::<u64>().map(|v| StreamRecordId::new(v, 0)))?
                     };
                 let to_id =
                     if to_id == "+" {
-                        StreamEntryId::MAX
+                        StreamRecordId::MAX
                     } else {
-                        to_id.parse::<StreamEntryId>().or(to_id.parse::<u64>().map(|v| StreamEntryId::new(v, u64::MAX)))?
+                        to_id.parse::<StreamRecordId>().or(to_id.parse::<u64>().map(|v| StreamRecordId::new(v, u64::MAX)))?
                     };
                 Ok(vec![
                     self.store.read().unwrap()
@@ -137,8 +138,8 @@ impl RedisServer {
                     Some(sub_params) => {
                         // XREAD stream key1 key2 id1 id2
                         let (keys, ids) = sub_params.split_at(sub_params.len() / 2);
-                        let key_id_pairs: HashMap<String, StreamEntryId> = {
-                            let mut pairs: HashMap<String, StreamEntryId> = HashMap::new();
+                        let key_id_pairs: HashMap<String, StreamRecordId> = {
+                            let mut pairs: HashMap<String, StreamRecordId> = HashMap::new();
                             let store = self.store.read().unwrap();
                             for (key, id) in keys.iter().zip(ids.iter()) {
                                 let key = key.to_string();
@@ -146,7 +147,7 @@ impl RedisServer {
                                 let from_id = if from_id == "$" {
                                     store.latest_stream(&key)?
                                 } else {
-                                    from_id.parse::<StreamEntryId>()?
+                                    from_id.parse::<StreamRecordId>()?
                                 };
                                 pairs.insert(key, from_id);
                             }
@@ -232,7 +233,7 @@ impl RedisServer {
     }
 
     /// read all stream values for the keys and minimal ids
-    fn xread_values(&self, keys: &[String], key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<RESP> {
+    fn xread_values(&self, keys: &[String], key_id_pairs: &HashMap<String, StreamRecordId>) -> Result<RESP> {
         let mut all_results = vec![];
         let store = self.store.read().unwrap();
 
@@ -241,7 +242,7 @@ impl RedisServer {
             let from_id = key_id_pairs.get(key).unwrap();
 
             let key_results = store
-                .read_stream(key, from_id.clone(), StreamEntryId::MAX)?;
+                .read_stream(key, from_id.clone(), StreamRecordId::MAX)?;
 
             let results: Vec<RESP> = key_results.iter().map(encode_stream_entries).collect();
 
@@ -266,7 +267,7 @@ impl RedisServer {
     blocks for until either timeout or new records were added.
     returns true if it timed out.
      */
-    fn block_xread(&self, block_ms: u64, key_id_pairs: &HashMap<String, StreamEntryId>) -> Result<bool> {
+    fn block_xread(&self, block_ms: u64, key_id_pairs: &HashMap<String, StreamRecordId>) -> Result<bool> {
 // wait for any of the keys to be added
         let timeout = if block_ms == 0 { Duration::MAX } else { Duration::from_millis(block_ms) };
         println!("will block for {:?}", timeout);
@@ -274,7 +275,7 @@ impl RedisServer {
         let keys = key_id_pairs.keys().collect::<Vec<&String>>();
 
         let is_acceptable = |stream_event: StreamEvent| {
-            key_id_pairs.get(&stream_event.0).map_or(false, |id| stream_event.1 > *id)
+            key_id_pairs.get(&stream_event.key).map_or(false, |id| stream_event.id > *id)
         };
 
         let this_listener = Arc::new((Mutex::new(None), Condvar::new()));
@@ -304,7 +305,7 @@ impl RedisServer {
         let db_file = Path::new(&self.db_dir).join(&self.db_filename);
         if db_file.exists() {
             let file = File::open(&db_file)?;
-            self.store.write().unwrap().load(BufReader::new(file))?;
+            self.store.write().unwrap().load_rdb(BufReader::new(file))?;
             println!("loaded RDB file: {:?}", db_file);
         } else {
             println!("no db file found to load: {:?}", db_file);

@@ -20,7 +20,7 @@ impl FromStr for Binding {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut seq = s.split(' ');
-        let host = seq.next().unwrap();
+        let host = seq.next().ok_or(anyhow::format_err!("invalid binding: {}", s))?;
         let default_port_str = DEFAULT_PORT.to_string();
         let port = seq.next().unwrap_or(&default_port_str).parse::<Port>()?;
         let master = Binding(host.to_string(), port);
