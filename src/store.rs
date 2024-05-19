@@ -115,7 +115,6 @@ pub struct StreamEvent(pub(crate) String, pub(crate) StreamEntryId);
 
 #[derive(Clone, Debug)]
 struct StreamListener(Weak<(Mutex<Option<StreamEvent>>, Condvar)>);
-// TODO the stream listeners should deregister with the store on destruction
 
 enum Value {
     String(String),
